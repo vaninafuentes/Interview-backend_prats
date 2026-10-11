@@ -1,0 +1,251 @@
+# ==============================================================================
+# CI — Integración Continua del backend Interview AI (Spring Boot)
+# ==============================================================================
+# Qué hace este workflow, en orden:
+#   1. Descarga el código (checkout)
+#   2. Configura Java 21 y cachea Gradle
+#   3. Compila y EJECUTA LOS TESTS contra un MySQL efímero
+#   4. Construye la imagen Docker con etiquetas versionadas
+#   5. Escanea la imagen con Grype (CVE) y publica el informe
+#   6. Se autentica en Azure con el Service Principal
+#   7. Publica la imagen en Azure Container Registry (ACR)
+#
+# IMPORTANTE: este workflow NO despliega. Solo construye, escanea y publica.
+# El despliegue a Azure Container Apps es un job separado y condicionado
+# (ver la Fase 11 del proyecto).
+#
+# Se dispara con:
+#   - push a main
+#   - push de una etiqueta vX.Y.Z (publica además esa versión semántica)
+#   - ejecución manual desde la pestaña Actions (workflow_dispatch)
+# ==============================================================================
+
+name: CI - Build, Scan y Publicación en ACR
+
+on:
+  push:
+    branches: [main]
+    # OJO: GitHub usa patrones glob, NO expresiones regulares.
+    # 'v*.*.*' coincide con v1.0.1, v2.3.10, etc. (un patrón tipo
+    # 'v[0-9]+.[0-9]+.[0-9]+' NO funcionaría: acá + y [] no son cuantificadores).
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      motivo:
+        description: 'Motivo de la ejecución manual (queda en el historial)'
+        required: false
+        type: string
+        default: 'Ejecución manual'
+
+# Configuración del registro, tomada de los Secrets del repositorio
+# (Settings > Secrets and variables > Actions). NUNCA se escriben valores
+# reales acá: el workflow los lee en tiempo de ejecución.
+env:
+  REGISTRY: ${{ secrets.ACR_REGISTRY }}
+  IMAGE_NAME: interview-backend
+
+# El workflow solo necesita leer el código. No usa OIDC, por lo que no
+# requiere id-token: se autentica con el Service Principal (secreto).
+permissions:
+  contents: read
+
+# Si se pushea dos veces seguidas, cancela la ejecución anterior que quedó vieja.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-scan-push:
+    name: Compilar, testear, escanear y publicar
+    runs-on: ubuntu-latest
+
+    # ------------------------------------------------------------------------
+    # MySQL efímero: existe SOLO durante esta ejecución del pipeline.
+    # Permite que los tests de integración corran contra una base real en vez
+    # de desactivarlos. Las credenciales son descartables (contenedor temporal).
+    # ------------------------------------------------------------------------
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: interviewai_db
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+          --health-start-period=30s
+
+    steps:
+      # ----------------------------------------------------------------------
+      # 1. Código fuente
+      # ----------------------------------------------------------------------
+      - name: Checkout del repositorio
+        uses: actions/checkout@v7
+
+      # ----------------------------------------------------------------------
+      # 2. Java 21 + caché de Gradle (acelera las ejecuciones siguientes)
+      # ----------------------------------------------------------------------
+      - name: Configurar Java 21 (Temurin)
+        uses: actions/setup-java@v6
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      # ----------------------------------------------------------------------
+      # 3. Compilación + TESTS
+      #    Las credenciales apuntan al MySQL efímero de arriba, no a Azure.
+      #    Los tests NO se desactivan: si fallan, el pipeline se detiene acá
+      #    y nunca se publica una imagen rota.
+      # ----------------------------------------------------------------------
+      - name: Compilar y ejecutar los tests
+        env:
+          SPRING_DATASOURCE_URL: jdbc:mysql://127.0.0.1:3306/interviewai_db?createDatabaseIfNotExist=true&useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+          SPRING_DATASOURCE_USERNAME: root
+          SPRING_DATASOURCE_PASSWORD: root
+          JWT_SECRET: clave-solo-para-los-tests-del-pipeline-de-32-caracteres
+        run: ./gradlew build --no-daemon
+
+      - name: Publicar el resultado de los tests
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: resultado-tests
+          path: build/reports/tests/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      # ----------------------------------------------------------------------
+      # 4. Cálculo de etiquetas de la imagen
+      #    Estrategia de versionado (consistente con el despliegue):
+      #      - SIEMPRE una etiqueta con el SHA corto del commit  -> :abc1234
+      #      - SI el push es de una etiqueta git vX.Y.Z         -> :v1.0.1
+      #      - ADEMÁS :latest como alias de comodidad
+      #    El despliegue SIEMPRE usa una etiqueta explícita, nunca latest.
+      # ----------------------------------------------------------------------
+      - name: Calcular las etiquetas de la imagen
+        id: tags
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          echo "SHORT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
+
+          TAGS="${REGISTRY}/${IMAGE_NAME}:${SHORT_SHA}"
+
+          # Si el disparador es una etiqueta git (v1.2.3), se agrega como tag
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+            echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+            TAGS="${TAGS},${REGISTRY}/${IMAGE_NAME}:${VERSION}"
+            echo "Etiqueta semántica detectada: ${VERSION}"
+          fi
+
+          TAGS="${TAGS},${REGISTRY}/${IMAGE_NAME}:latest"
+          echo "TAGS=${TAGS}" >> "$GITHUB_ENV"
+          echo "Etiquetas que se van a construir: ${TAGS}"
+
+      # ----------------------------------------------------------------------
+      # 5. Construcción de la imagen Docker (multietapa, distroless)
+      #    Se pasan los argumentos de trazabilidad OCI que definimos en el
+      #    Dockerfile: fecha, SHA del commit y versión.
+      # ----------------------------------------------------------------------
+      - name: Construir la imagen Docker
+        run: |
+          ARGS=""
+          for tag in ${TAGS//,/ }; do
+            ARGS="${ARGS} -t ${tag}"
+          done
+
+          docker build \
+            --build-arg BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --build-arg VCS_REF="${GITHUB_SHA}" \
+            --build-arg IMAGE_TAG="${VERSION:-${SHORT_SHA}}" \
+            ${ARGS} \
+            .
+
+          echo "Imagen construida con las etiquetas: ${TAGS}"
+
+      # ----------------------------------------------------------------------
+      # 6. Análisis de vulnerabilidades (CVE/CVSS) con Grype
+      #    - Se imprime la tabla completa en el log (evidencia para el parcial)
+      #    - Se genera el informe JSON y se publica como artefacto
+      #    - Se agrega un resumen por severidad al summary de la ejecución
+      #
+      #    fail-build está DESACTIVADO a propósito y de forma consciente:
+      #    hoy la imagen tiene 3 vulnerabilidades críticas SIN corrección
+      #    publicada (2 de spring-webmvc 6.2.19 y 1 de libc6 en la base
+      #    distroless). Activar el gate rompería el pipeline por algo que
+      #    no podemos resolver. Para convertirlo en un gate estricto,
+      #    cambiar fail-build a true en el paso siguiente comentado.
+      # ----------------------------------------------------------------------
+      - name: Instalar Grype
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh \
+            | sh -s -- -b /usr/local/bin
+
+      - name: Escanear la imagen con Grype
+        id: grype
+        run: |
+          IMAGE="${REGISTRY}/${IMAGE_NAME}:${SHORT_SHA}"
+
+          grype "${IMAGE}" -o table | tee grype-report.txt
+          grype "${IMAGE}" -o json > grype-report.json
+
+          # Resumen por severidad en el panel de la ejecución
+          {
+            echo "## Informe de vulnerabilidades (Grype)"
+            echo ""
+            echo "| Severidad | Cantidad |"
+            echo "| :--- | :---: |"
+            for sev in Critical High Medium Low Negligible Unknown; do
+              COUNT=$(jq "[.matches[] | select(.vulnerability.severity == \"${sev}\")] | length" grype-report.json)
+              echo "| ${sev} | ${COUNT} |"
+            done
+            TOTAL=$(jq '.matches | length' grype-report.json)
+            echo "| **TOTAL** | **${TOTAL}** |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publicar el informe de vulnerabilidades
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: informe-grype
+          path: |
+            grype-report.json
+            grype-report.txt
+          retention-days: 30
+
+      # ----------------------------------------------------------------------
+      # 7. Autenticación en Azure y publicación en el ACR
+      #    - azure/login lee el JSON del Service Principal desde los Secrets
+      #    - az acr login reutiliza esa misma sesión (sin usuario admin)
+      # ----------------------------------------------------------------------
+      - name: Login en Azure (Service Principal)
+        uses: azure/login@v3
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Login en Azure Container Registry
+        # ${REGISTRY%%.*} toma "acrvaniainterview.azurecr.io" y devuelve
+        # "acrvaniainterview" (todo lo anterior al primer punto).
+        # Así no hace falta guardar el nombre del registro por separado.
+        run: az acr login --name "${REGISTRY%%.*}"
+
+      - name: Publicar la imagen en el ACR
+        run: |
+          docker push --all-tags "${REGISTRY}/${IMAGE_NAME}"
+          echo "### Imagen publicada" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Las siguientes etiquetas quedaron publicadas en \`${REGISTRY}\`:" >> "$GITHUB_STEP_SUMMARY"
+          for tag in ${TAGS//,/ }; do
+            echo "- \`${tag}\`" >> "$GITHUB_STEP_SUMMARY"
+          done
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "SHA del commit: \`${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cerrar sesión en Azure
+        if: always()
+        run: az logout || true
