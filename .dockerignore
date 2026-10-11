@@ -1,0 +1,30 @@
+# ==============================================================================
+# .dockerignore — Exclusiones del contexto de construcción de Docker
+# ==============================================================================
+
+# Control de versiones
+.git
+.gitignore
+
+# Artefactos y directorios de compilación local
+build/
+bin/
+.gradle/
+
+# Archivos de entorno y credenciales locales
+.env
+*.env
+!.env.example
+
+# IDEs y editores
+.idea/
+.vscode/
+*.iml
+
+# Documentación y archivos auxiliares
+*.md
+docs/
+
+# Scripts de Windows innecesarios en el contenedor Linux
+*.bat
+*.cmd

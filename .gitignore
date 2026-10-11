@@ -1,0 +1,61 @@
+HELP.md
+.gradle
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+bin/
+!**/src/main/**/bin/
+!**/src/test/**/bin/
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+out/
+!**/src/main/**/out/
+!**/src/test/**/out/
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+
+### VS Code ###
+.vscode/
+
+### Gradle & Build ###
+# Solo ignorar archivos generados, no los de configuración del proyecto
+
+### IDE ###
+.gitattributes
+
+### Secretos — NUNCA commitear archivos con credenciales reales ###
+# Archivos .env reales y secretos locales generados durante el despliegue.
+# Se versiona .env.example (plantilla sin valores reales), no .env.
+.env
+.env.local
+.secrets/
+
+### Exportaciones de imágenes Docker (evidencia de escaneo) ###
+# docker save genera archivos de ~120 MB que no deben versionarse.
+*.tar
+
+### NOTA sobre application.properties ###
+# NO se ignora: es un archivo de configuración versionado que contiene
+# únicamente marcadores ${VARIABLE_DE_ENTORNO:valor_por_defecto}, sin secretos.
+# Si se ignora, el JAR que construye GitHub Actions queda sin configuración
+# y la aplicación no arranca en Azure. Las credenciales reales se inyectan
+# por variables de entorno (local) y por secretos de Container Apps (Azure).

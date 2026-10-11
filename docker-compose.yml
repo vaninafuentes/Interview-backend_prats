@@ -1,0 +1,78 @@
+# ==============================================================================
+# DOCKER COMPOSE — INTERVIEW BACKEND & MYSQL
+# ==============================================================================
+# Orquestación del entorno local completo:
+#   - db: MySQL 8 con volumen persistente y healthcheck nativo
+#   - backend: Spring Boot compilado y empaquetado mediante Dockerfile multietapa
+# ==============================================================================
+
+services:
+  # ----------------------------------------------------------------------------
+  # Servicio de Base de Datos: MySQL 8
+  # ----------------------------------------------------------------------------
+  db:
+    image: mysql:8
+    container_name: interview-mysql-compose
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-interviewai_db}
+    ports:
+      - "${MYSQL_PORT:-3307}:3306"
+    volumes:
+      - mysql_compose_data:/var/lib/mysql
+    networks:
+      - interview-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # ----------------------------------------------------------------------------
+  # Servicio de Aplicación: Spring Boot Backend
+  # ----------------------------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILD_DATE: ${BUILD_DATE:-}
+        VCS_REF: ${VCS_REF:-}
+        IMAGE_TAG: ${IMAGE_TAG:-latest}
+    image: interview-backend:compose
+    container_name: interview-backend-compose
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      PORT: 8080
+      # Conexión directa a través de la red interna de Docker (usando el hostname del servicio "db")
+      SPRING_DATASOURCE_URL: jdbc:mysql://db:3306/${MYSQL_DATABASE:-interviewai_db}?createDatabaseIfNotExist=true&useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: ${SPRING_DATASOURCE_USERNAME:-root}
+      SPRING_DATASOURCE_PASSWORD: ${SPRING_DATASOURCE_PASSWORD:-root}
+      SPRING_JPA_HIBERNATE_DDL_AUTO: ${SPRING_JPA_HIBERNATE_DDL_AUTO:-update}
+      SPRING_JPA_SHOW_SQL: ${SPRING_JPA_SHOW_SQL:-true}
+      HIKARI_MAX_POOL_SIZE: ${HIKARI_MAX_POOL_SIZE:-10}
+      HIKARI_MIN_IDLE: ${HIKARI_MIN_IDLE:-2}
+      JWT_SECRET: ${JWT_SECRET:-interview-app-super-secret-key-2024-change-in-production}
+      JWT_EXPIRATION_MS: ${JWT_EXPIRATION_MS:-604800000}
+      GROQ_API_KEY: ${GROQ_API_KEY:-NOT_CONFIGURED}
+    networks:
+      - interview-network
+
+# ------------------------------------------------------------------------------
+# Redes y Volúmenes con Persistencia Aislada
+# ------------------------------------------------------------------------------
+networks:
+  interview-network:
+    driver: bridge
+
+volumes:
+  mysql_compose_data:
+    name: mysql_compose_prats_data
+    driver: local
