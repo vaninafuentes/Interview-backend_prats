@@ -1,0 +1,94 @@
+# ==============================================================================
+# CodeQL — Análisis estático de seguridad del código fuente (SAST)
+# ==============================================================================
+# QUÉ ES: CodeQL es el motor de análisis estático de GitHub. Convierte el código
+#         en una base de datos consultable y ejecuta consultas de seguridad
+#         sobre ella, buscando PATRONES DE CÓDIGO INSEGURO.
+#
+# QUÉ NO ES: no analiza vulnerabilidades de dependencias ni de la imagen
+#            Docker (para eso está Grype, en el workflow de CI). No ejecuta la
+#            aplicación y por lo tanto NO bloquea ataques en tiempo real:
+#            encuentra problemas en el código antes de que se despliegue.
+#
+# DIFERENCIA CLAVE:
+#   Grype  → "¿esta biblioteca tiene una CVE conocida publicada?"  (dependencias)
+#   CodeQL → "¿este código nuestro tiene un patrón vulnerable?"    (código propio)
+#
+# Ejemplos de lo que busca: inyección SQL, XSS, deserialización insegura,
+# path traversal, criptografía débil, exposición de información sensible,
+# credenciales hardcodeadas.
+#
+# Se ejecuta en: push a main, pull requests y una vez por semana (para detectar
+# problemas nuevos cuando se actualizan las consultas de CodeQL, aunque el
+# código no haya cambiado).
+#
+# En repositorios PÚBLICOS el análisis de código es gratuito.
+# ==============================================================================
+
+name: CodeQL - Análisis estático de seguridad
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Todos los lunes a las 06:37 UTC (horario no redondo para no coincidir
+    # con el pico de ejecuciones de GitHub).
+    - cron: '37 6 * * 1'
+  workflow_dispatch:
+
+# El análisis necesita escribir los resultados en la pestaña "Security"
+# del repositorio. Solo lectura del código.
+permissions:
+  security-events: write
+  contents: read
+  actions: read
+
+jobs:
+  analyze:
+    name: Analizar código Java
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v7
+
+      - name: Configurar Java 21 (Temurin)
+        uses: actions/setup-java@v6
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      # ----------------------------------------------------------------------
+      # Inicializar CodeQL: prepara el extractor que se engancha al proceso de
+      # compilación para observar cómo se construye el código.
+      #
+      # queries: security-extended → conjunto ampliado de consultas de
+      # seguridad (más exhaustivo que el conjunto por defecto; puede reportar
+      # más hallazgos de menor severidad).
+      # ----------------------------------------------------------------------
+      - name: Inicializar CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: java-kotlin
+          queries: security-extended
+
+      # ----------------------------------------------------------------------
+      # Compilar: CodeQL necesita que el código se compile para construir una
+      # representación precisa. Se compila SOLO el código de producción
+      # (compileJava), sin ejecutar los tests: los tests requieren una base de
+      # datos MySQL, que no hace falta para el análisis estático.
+      # ----------------------------------------------------------------------
+      - name: Compilar para el análisis
+        run: ./gradlew compileJava --no-daemon
+
+      # ----------------------------------------------------------------------
+      # Ejecutar el análisis y publicar los resultados. Los hallazgos aparecen
+      # en la pestaña "Security" → "Code scanning alerts" del repositorio.
+      # ----------------------------------------------------------------------
+      - name: Ejecutar el análisis de CodeQL
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:java-kotlin"
