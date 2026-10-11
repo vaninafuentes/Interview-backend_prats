@@ -1,7 +1,7 @@
 # ==============================================================================
-# CI — Integración Continua del backend Interview AI (Spring Boot)
+# CI/CD — Integración y Despliegue Continuo del backend Interview AI (Spring Boot)
 # ==============================================================================
-# Qué hace este workflow, en orden:
+# JOB 1 (build-scan-push) — Integración Continua. SIEMPRE se ejecuta:
 #   1. Descarga el código (checkout)
 #   2. Configura Java 21 y cachea Gradle
 #   3. Compila y EJECUTA LOS TESTS contra un MySQL efímero
@@ -10,17 +10,19 @@
 #   6. Se autentica en Azure con el Service Principal
 #   7. Publica la imagen en Azure Container Registry (ACR)
 #
-# IMPORTANTE: este workflow NO despliega. Solo construye, escanea y publica.
-# El despliegue a Azure Container Apps es un job separado y condicionado
-# (ver la Fase 11 del proyecto).
+# JOB 2 (deploy) — Despliegue Continuo. SOLO se ejecuta si se cumple alguna:
+#   a) El disparador fue una ETIQUETA GIT vX.Y.Z  → libera esa versión
+#   b) Se ejecutó MANUALMENTE con la casilla "deploy" marcada
+#   Un push normal a main NUNCA despliega (solo construye y publica).
 #
-# Se dispara con:
-#   - push a main
-#   - push de una etiqueta vX.Y.Z (publica además esa versión semántica)
-#   - ejecución manual desde la pestaña Actions (workflow_dispatch)
+# Los tres casos que se pueden demostrar:
+#   CASO A: push a main ...................... construye y publica, SIN desplegar
+#   CASO B: push del tag vX.Y.Z .............. construye, publica Y despliega
+#   CASO C: Run workflow + casilla "deploy" .. decisión manual (y permite
+#                                              redesplegar una versión anterior)
 # ==============================================================================
 
-name: CI - Build, Scan y Publicación en ACR
+name: CI/CD - Build, Scan, Publicación y Despliegue
 
 on:
   push:
@@ -31,11 +33,16 @@ on:
     tags: ['v*.*.*']
   workflow_dispatch:
     inputs:
-      motivo:
-        description: 'Motivo de la ejecución manual (queda en el historial)'
+      deploy:
+        description: 'Desplegar en Azure Container Apps al finalizar'
+        required: false
+        type: boolean
+        default: false
+      version:
+        description: 'Etiqueta de imagen a desplegar (ej: v1.0.1). Vacío = la imagen construida en esta ejecución'
         required: false
         type: string
-        default: 'Ejecución manual'
+        default: ''
 
 # Configuración del registro, tomada de los Secrets del repositorio
 # (Settings > Secrets and variables > Actions). NUNCA se escriben valores
@@ -245,6 +252,137 @@ jobs:
           done
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "SHA del commit: \`${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cerrar sesión en Azure
+        if: always()
+        run: az logout || true
+
+  # ==========================================================================
+  # JOB 2 — DESPLIEGUE CONTINUO (CD)
+  # ==========================================================================
+  # Solo corre si el job de CI terminó bien Y se cumple una condición de
+  # liberación. La condición se evalúa ANTES de arrancar el job, así que un
+  # push normal a main ni siquiera lo inicia (aparece como "skipped").
+  #
+  # Condiciones:
+  #   - startsWith(github.ref, 'refs/tags/v')  → se pusheó una etiqueta vX.Y.Z
+  #   - inputs.deploy == true                  → se marcó la casilla al ejecutar
+  #                                              manualmente
+  # ==========================================================================
+  deploy:
+    name: Desplegar en Azure Container Apps
+    runs-on: ubuntu-latest
+    needs: build-scan-push
+    if: >-
+      needs.build-scan-push.result == 'success' &&
+      (startsWith(github.ref, 'refs/tags/v') || inputs.deploy == true)
+
+    steps:
+      - name: Login en Azure (Service Principal)
+        uses: azure/login@v3
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # ----------------------------------------------------------------------
+      # Determinar QUÉ versión se va a desplegar.
+      # Prioridad:
+      #   1. La indicada manualmente en el input "version" (permite volver a
+      #      una versión anterior: reversión controlada)
+      #   2. La etiqueta git que disparó la ejecución (vX.Y.Z)
+      #   3. El SHA corto del commit (la imagen recién construida)
+      # ----------------------------------------------------------------------
+      - name: Determinar la versión a desplegar
+        id: version
+        run: |
+          if [[ -n "${{ inputs.version }}" ]]; then
+            TAG="${{ inputs.version }}"
+            MOTIVO="versión indicada manualmente (redeploy o reversión)"
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            MOTIVO="liberación de la etiqueta git ${TAG}"
+          else
+            TAG="${GITHUB_SHA::7}"
+            MOTIVO="imagen construida en esta misma ejecución"
+          fi
+
+          echo "TAG=${TAG}" >> "$GITHUB_ENV"
+          echo "MOTIVO=${MOTIVO}" >> "$GITHUB_ENV"
+          echo "Versión a desplegar: ${TAG} — ${MOTIVO}"
+
+      # ----------------------------------------------------------------------
+      # Verificar que la imagen exista realmente en el ACR antes de desplegar.
+      # Evita dejar la aplicación apuntando a una etiqueta inexistente.
+      # ----------------------------------------------------------------------
+      - name: Verificar que la imagen existe en el ACR
+        run: |
+          ACR_NAME="${REGISTRY%%.*}"
+          EXISTE=$(az acr repository show-tags \
+            --name "${ACR_NAME}" \
+            --repository "${IMAGE_NAME}" \
+            --query "contains(@, '${TAG}')" -o tsv)
+
+          if [[ "${EXISTE}" != "true" ]]; then
+            echo "::error::La etiqueta ${TAG} no existe en ${ACR_NAME}/${IMAGE_NAME}"
+            exit 1
+          fi
+          echo "Imagen verificada: ${REGISTRY}/${IMAGE_NAME}:${TAG}"
+
+      # ----------------------------------------------------------------------
+      # Desplegar. Se usa "az containerapp update", que crea una nueva
+      # revisión de la aplicación y reutiliza las credenciales del registro
+      # que ya tiene configuradas el Container App.
+      # ----------------------------------------------------------------------
+      - name: Desplegar en Azure Container Apps
+        run: |
+          az extension add --name containerapp --upgrade --only-show-errors 2>/dev/null || true
+
+          az containerapp update \
+            --name interview-backend \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --image "${REGISTRY}/${IMAGE_NAME}:${TAG}" \
+            --query "properties.template.containers[0].image" -o tsv
+
+          echo "Imagen desplegada correctamente."
+
+      # ----------------------------------------------------------------------
+      # Verificación posterior al despliegue: se consulta el endpoint público
+      # de salud hasta obtener HTTP 200. El pipeline NO se da por exitoso
+      # hasta comprobar que la aplicación realmente responde.
+      # ----------------------------------------------------------------------
+      - name: Verificar que la aplicación responde
+        run: |
+          FQDN=$(az containerapp show \
+            --name interview-backend \
+            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
+            --query "properties.configuration.ingress.fqdn" -o tsv)
+          URL="https://${FQDN}/actuator/health"
+
+          echo "Verificando ${URL}"
+          for i in $(seq 1 30); do
+            CODE=$(curl -s -o /tmp/health.json -w '%{http_code}' -m 30 "${URL}" || true)
+            if [[ "${CODE}" == "200" ]]; then
+              echo "Aplicación respondiendo HTTP 200 (intento ${i})"
+              cat /tmp/health.json
+              {
+                echo "### Despliegue verificado"
+                echo ""
+                echo "| Dato | Valor |"
+                echo "| :--- | :--- |"
+                echo "| Versión desplegada | \`${TAG}\` |"
+                echo "| Motivo | ${MOTIVO} |"
+                echo "| Imagen | \`${REGISTRY}/${IMAGE_NAME}:${TAG}\` |"
+                echo "| Commit | \`${GITHUB_SHA}\` |"
+                echo "| URL | https://${FQDN} |"
+                echo "| Health check | HTTP 200 |"
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "Intento ${i}: HTTP ${CODE} — esperando a que la aplicación arranque..."
+            sleep 10
+          done
+
+          echo "::error::La aplicación no respondió HTTP 200 en el tiempo esperado"
+          exit 1
 
       - name: Cerrar sesión en Azure
         if: always()
