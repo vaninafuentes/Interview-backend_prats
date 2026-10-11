@@ -132,7 +132,7 @@ steps:
 | Caso | Cómo se logra | Estado |
 | :--- | :--- | :---: |
 | **A** — Construir y publicar una imagen **sin** desplegar | Un push a `main` dispara el pipeline, que construye, escanea y publica. El job `deploy` aparece como **skipped**. | ✅ **Verificado** (ejecución 38182406341) |
-| **B** — Construir, publicar **y** desplegar | Push de una **etiqueta git `vX.Y.Z`**: el job `deploy` se dispara automáticamente con esa versión semántica. | ⚠️ **Implementado, pendiente de verificar con un tag real** |
+| **B** — Construir, publicar **y** desplegar | Push de una **etiqueta git `vX.Y.Z`**: el job `deploy` se dispara automáticamente con esa versión semántica. | ✅ **Verificado** (tag `v1.1.0`, ejecución 38185761730) |
 | **C** — Ejecutar manualmente eligiendo si desplegar | Pestaña Actions → *Run workflow* → marcar la casilla **"Desplegar en Azure Container Apps al finalizar"**. Dejando el campo *version* vacío despliega la imagen recién construida; escribiendo `v1.0.1` **redespliega una versión anterior** (reversión). | ✅ **Verificado** (ejecución 38182909062) |
 
 ---
@@ -242,7 +242,34 @@ Para volver a una imagen previa no hay que reconstruir nada: *Run workflow* → 
 escribir la etiqueta deseada (por ejemplo `v1.0.1`) en el campo **version** → *Run workflow*. El pipeline
 verifica que esa etiqueta exista en el ACR, la despliega y confirma con el health check.
 
-### Pendiente de verificación
+### Verificación del Caso B (liberación por etiqueta)
 
-- **Caso B** (despliegue automático al pushear un tag `vX.Y.Z`): el código está implementado, pero todavía no
-  se ejecutó con un tag real. Se verifica en cuanto se libere la próxima versión.
+El 11/10/2026 se liberó la versión **v1.1.0** con un solo comando:
+
+```bash
+git tag -a v1.1.0 -m "v1.1.0 - Despliegue continuo, administracion y observabilidad"
+git push origin v1.1.0
+```
+
+**No se tocó ningún botón.** Resultado verificado:
+
+| Verificación | Resultado |
+| :--- | :--- |
+| Ejecución disparada | `evento: push`, `ref: v1.1.0` |
+| Job de CI | ✅ OK |
+| Job de despliegue | ✅ OK (se ejecutó solo: la condición `startsWith(github.ref, 'refs/tags/v')` se cumplió) |
+| Etiqueta publicada en el ACR | `acrvaniainterview.azurecr.io/interview-backend:v1.1.0` |
+| Imagen que quedó corriendo en Azure | `acrvaniainterview.azurecr.io/interview-backend:v1.1.0` |
+| Revisión | `interview-backend--latest` · Active · **Healthy** |
+
+**Conclusión:** la secuencia `git tag → git push` es todo lo que hace falta para liberar una versión. El
+pipeline compila, testea, escanea, publica con la etiqueta semántica, despliega y **verifica que la
+aplicación responda** antes de declararse exitoso.
+
+### Estado de los tres casos (todos verificados)
+
+| Caso | Verificación |
+| :--- | :--- |
+| A — publicar sin desplegar | Ejecución 38182406341 — job de deploy **skipped** |
+| B — desplegar por etiqueta | Ejecución 38185761730 — tag `v1.1.0`, deploy automático |
+| C — desplegar manualmente | Ejecución 38182909062 — casilla marcada, deploy OK |
