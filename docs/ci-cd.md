@@ -131,9 +131,9 @@ steps:
 
 | Caso | Cómo se logra | Estado |
 | :--- | :--- | :---: |
-| **A** — Construir y publicar una imagen **sin** desplegar | Un push a `main` dispara el pipeline, que construye, escanea y publica. El despliegue es un job separado que **no existe en el pipeline de CI**. | ✅ **Implementado y funcionando** |
-| **B** — Construir, publicar **y** desplegar | Requiere el job de despliegue condicionado en Azure Container Apps. | ⏳ Fase 11 |
-| **C** — Ejecutar manualmente eligiendo si desplegar | `workflow_dispatch` con un input `deploy` (booleano) que condiciona el job de despliegue. | ⏳ Fase 11 |
+| **A** — Construir y publicar una imagen **sin** desplegar | Un push a `main` dispara el pipeline, que construye, escanea y publica. El job `deploy` aparece como **skipped**. | ✅ **Verificado** (ejecución 38182406341) |
+| **B** — Construir, publicar **y** desplegar | Push de una **etiqueta git `vX.Y.Z`**: el job `deploy` se dispara automáticamente con esa versión semántica. | ⚠️ **Implementado, pendiente de verificar con un tag real** |
+| **C** — Ejecutar manualmente eligiendo si desplegar | Pestaña Actions → *Run workflow* → marcar la casilla **"Desplegar en Azure Container Apps al finalizar"**. Dejando el campo *version* vacío despliega la imagen recién construida; escribiendo `v1.0.1` **redespliega una versión anterior** (reversión). | ✅ **Verificado** (ejecución 38182909062) |
 
 ---
 
@@ -188,8 +188,61 @@ que confirma que la causa era el metadato de git y no el archivo.
 
 ---
 
-## 9. PENDIENTE (Fase 11)
+## 9. JOB 2 — DESPLIEGUE CONTINUO (CD)
 
-- Job de despliegue a Azure Container Apps, condicionado.
-- Control de despliegue por rama, por tag git y por input manual (`workflow_dispatch`).
-- Botón de despliegue explícito desde la interfaz de GitHub.
+### Condición de ejecución
+
+El job `deploy` declara `needs: build-scan-push` y una condición explícita:
+
+```yaml
+if: >-
+  needs.build-scan-push.result == 'success' &&
+  (startsWith(github.ref, 'refs/tags/v') || inputs.deploy == true)
+```
+
+Se lee como: **"desplegar solo si el CI terminó bien Y (se pusheó una etiqueta de versión O se pidió manualmente)"**.
+
+| Disparador | ¿Corre el deploy? | Caso |
+| :--- | :---: | :---: |
+| Push a `main` | ❌ No (aparece como *skipped*) | A |
+| Push de etiqueta `v1.0.2` | ✅ Sí, despliega `:v1.0.2` | B |
+| *Run workflow* sin marcar la casilla | ❌ No | A |
+| *Run workflow* + casilla marcada | ✅ Sí, despliega la imagen de esa ejecución | C |
+| *Run workflow* + casilla + `version: v1.0.1` | ✅ Sí, despliega **esa** versión (reversión) | C ampliado |
+
+### Los 6 pasos del despliegue
+
+| Paso | Qué hace |
+| :--- | :--- |
+| Login en Azure | Se autentica con el Service Principal. |
+| Determinar la versión a desplegar | Resuelve la etiqueta con prioridad: input manual → etiqueta git → SHA corto del commit. |
+| Verificar que la imagen existe en el ACR | `az acr repository show-tags` y falla con `::error::` si la etiqueta no existe. Evita dejar la aplicación apuntando a una imagen inexistente. |
+| Desplegar en Azure Container Apps | `az containerapp update --image …`, que crea una nueva revisión y reutiliza las credenciales de registro ya configuradas en la aplicación. |
+| **Verificar que la aplicación responde** | Consulta el endpoint público `/actuator/health` en un bucle de hasta 30 intentos hasta obtener **HTTP 200**. |
+| Cerrar sesión en Azure | `az logout` siempre, incluso si algo falló. |
+
+**Por qué el paso de verificación es el más importante:** un despliegue "exitoso" en Azure solo significa que la
+API aceptó el comando, **no** que la aplicación funcione. Sin este paso el pipeline se pondría verde aunque
+Spring Boot muriera al arrancar (exactamente lo que pasaba con el error 503 antes de configurar la base de
+datos). El pipeline no se declara exitoso hasta comprobar que el servicio responde.
+
+### Evidencia de la verificación (11/10/2026)
+
+Ejecución manual 38182909062 — ambos jobs en verde:
+
+```
+Imagen desplegada:  acrvaniainterview.azurecr.io/interview-backend:9104691
+Revisión:           interview-backend--latest  (Active · Healthy)
+Health público:     {"status":"UP","db":{"status":"UP","database":"MySQL"}}
+```
+
+### Reversión a una versión anterior
+
+Para volver a una imagen previa no hay que reconstruir nada: *Run workflow* → casilla **deploy** marcada →
+escribir la etiqueta deseada (por ejemplo `v1.0.1`) en el campo **version** → *Run workflow*. El pipeline
+verifica que esa etiqueta exista en el ACR, la despliega y confirma con el health check.
+
+### Pendiente de verificación
+
+- **Caso B** (despliegue automático al pushear un tag `vX.Y.Z`): el código está implementado, pero todavía no
+  se ejecutó con un tag real. Se verifica en cuanto se libere la próxima versión.
