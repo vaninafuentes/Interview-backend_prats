@@ -204,3 +204,75 @@ MSYS_NO_PATHCONV=1 docker run --rm \
 Los reportes crudos quedan versionados en `scans/` como evidencia:
 - `scans/v1.0.0-baseline.json` (186 hallazgos)
 - `scans/v1.0.1-final.json` (115 hallazgos)
+
+---
+
+## 7. CODEQL — ANÁLISIS ESTÁTICO DEL CÓDIGO (SAST)
+
+**Archivo:** `.github/workflows/codeql.yml`  
+**Primera ejecución verificada:** 11 de Octubre de 2026 — los 5 pasos en verde
+
+### 7.1 ¿Qué es CodeQL?
+
+Es el motor de análisis estático de GitHub. Convierte el código fuente en una **base de datos consultable**
+y ejecuta sobre ella un conjunto de consultas que buscan **patrones de código inseguro**. Es la técnica
+conocida como **SAST** (*Static Application Security Testing*): analiza el código **sin ejecutarlo**.
+
+### 7.2 Diferencias con Grype
+
+| | **Grype** | **CodeQL** |
+| :--- | :--- | :--- |
+| **Qué analiza** | Dependencias e imagen Docker | **Código fuente propio** |
+| **Cómo lo hace** | Compara versiones contra bases de datos de vulnerabilidades (CVE) | Consultas sobre una base de datos generada a partir del código |
+| **Qué encuentra** | "Tenés Tomcat 10.1.43, que tiene una CVE conocida" | "Este método nuestro concatena una consulta SQL con entrada del usuario" |
+| **Cuándo detecta** | Cuando la vulnerabilidad ya fue publicada por alguien | Vulnerabilidades **propias, aún no explotadas** |
+| **Ejecuta la aplicación** | No | No |
+
+**Son complementarios, no alternativos.** Grype cubre el riesgo *heredado* (bibliotecas de terceros);
+CodeQL cubre el riesgo *propio* (código que escribimos nosotros).
+
+> ⚠️ **Punto importante para la defensa:** CodeQL analiza **estáticamente**. **No bloquea ataques SQL en
+> tiempo de ejecución** — solo advierte que ese patrón existe en el código. Quien evita la inyección SQL en
+> ejecución es Hibernate/JPA con **consultas parametrizadas**, que es lo que usa este proyecto.
+
+### 7.3 Qué busca
+
+Inyección SQL, XSS, deserialización insegura, path traversal, criptografía débil, exposición de información
+sensible, credenciales embebidas en el código, y otras familias de defectos de seguridad.
+
+### 7.4 Cómo está configurado
+
+```yaml
+on:
+  push:        { branches: [main] }
+  pull_request:{ branches: [main] }
+  schedule:    [ '37 6 * * 1' ]   # todos los lunes
+  workflow_dispatch:
+```
+
+- **`queries: security-extended`** → conjunto ampliado de consultas de seguridad (más exhaustivo que el
+  conjunto por defecto).
+- **Compilación controlada:** se ejecuta `./gradlew compileJava` (solo código de producción, **sin tests**),
+  porque el análisis estático no necesita una base de datos y ejecutar los tests exigiría levantar MySQL.
+- **`permissions: security-events: write`** → necesario para publicar los resultados en la pestaña
+  *Security* del repositorio.
+- Se ejecuta también **una vez por semana** aunque el código no cambie: las consultas de CodeQL se actualizan
+  con el tiempo y pueden aparecer hallazgos nuevos sobre código viejo.
+
+En repositorios **públicos** el análisis de código es **gratuito**.
+
+### 7.5 Cómo ver los resultados
+
+1. Ir a https://github.com/vaninafuentes/Interview-backend_prats
+2. Pestaña **Security** (arriba, entre *Wiki* e *Insights*)
+3. En la barra lateral: **Code scanning alerts**
+4. Cada alerta muestra: regla, severidad, archivo, línea y una **explicación del flujo de datos** que
+   describe cómo la entrada del usuario llega hasta el punto vulnerable.
+
+### 7.6 Las tres técnicas de análisis de seguridad del proyecto
+
+| Técnica | Herramienta | Qué protege | Dónde se ejecuta |
+| :--- | :--- | :--- | :--- |
+| **Análisis de dependencias** (CVE/CVSS) | **Grype** | Bibliotecas de terceros e imagen base | `ci.yml`, en cada push |
+| **Análisis estático de código** (SAST) | **CodeQL** | Código propio | `codeql.yml`, en cada push y semanalmente |
+| **Análisis de la imagen** | **Grype** (sobre la imagen construida) | El contenedor completo tal como se despliega | `ci.yml`, antes de publicar |
