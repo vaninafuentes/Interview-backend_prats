@@ -222,4 +222,69 @@ Pruebas ejecutadas contra la URL pública real:
 | Tablas creadas por Hibernate en Azure MySQL | `users`, `questions`, `interview_sessions` |
 | Datos sembrados (DataSeeder) | 10 preguntas |
 
-**Estado de la revisión:** `interview-backend--latest` · activa · Healthy · imagen `v1.0.1`
+**Estado de la revisión:** `interview-backend--latest` · activa · Healthy
+
+---
+
+## 8. ADMINISTRACIÓN DE AZURE CONTAINER APPS (runbook)
+
+> **Herramienta:** para las operaciones del día a día existe `scripts/admin.sh`
+> (`bash scripts/admin.sh`). Abajo está el detalle de cada operación, con su equivalente
+> en el Portal y en la terminal, sus consecuencias y sus riesgos.
+
+### ⚠️ Distinción fundamental
+
+| | Backend | Base de datos |
+| :--- | :--- | :--- |
+| **Servicio** | Azure Container Apps | Azure Database for MySQL |
+| **Recurso** | `interview-backend` | `mysql-interview-backend` |
+| **Sección del portal** | *Container Apps* | *Azure Database for MySQL flexible servers* |
+
+**No confundir:** apagar desde *Container Apps → Stop* **apaga el backend, no la base**. Y hacerlo puede
+dejar el entorno marcado para auto-borrado (`ScheduledForDelete`), lo que rompe el próximo despliegue.
+
+### Tabla de operaciones
+
+| Operación | Desde el Portal | Desde la terminal | Cómo verificar | Consecuencias |
+| :--- | :--- | :--- | :--- | :--- |
+| **Ver el estado** | *Container Apps* → `interview-backend` → **Overview** | `az containerapp show -n interview-backend -g rg-interview-app` | `provisioningState = Succeeded` | Ninguna (solo lectura) |
+| **Ver la imagen desplegada** | **Application → Revisions** | `az containerapp show … --query "properties.template.containers[0].image"` | Devuelve `…:9104691` | Ninguna |
+| **Obtener la URL** | **Overview → Application Url** | `az containerapp show … --query "properties.configuration.ingress.fqdn" -o tsv` | `curl https://<fqdn>/actuator/health` | Ninguna |
+| **Ver revisiones** | **Application → Revisions and replicas** | `az containerapp revision list -n interview-backend -g rg-interview-app -o table` | Aparece una revisión *Active* con tráfico 100 % | Ninguna |
+| **Desplegar una versión** | **Application → Revisions → Create new revision** | `az containerapp update -n … -g … --image acrvaniainterview.azurecr.io/interview-backend:v1.0.1` | La revisión nueva queda *Active* y el health devuelve 200 | Crea una revisión nueva. **Momentáneo de indisponibilidad** durante el arranque |
+| **Revertir (rollback)** | Igual que desplegar, eligiendo una **revisión anterior** | Igual que desplegar, con una etiqueta anterior del ACR | La imagen desplegada es la versión buscada | Igual que desplegar. **No se pierde ningún dato** |
+| **Ver logs en vivo** | **Monitoring → Log stream** | `az containerapp logs show -n … -g … --tail 50` | Se ven las líneas de Spring Boot | Ninguna. ⚠️ Falla si la app está en 0 réplicas |
+| **Ver logs históricos** | **Monitoring → Logs** (Log Analytics) | Consulta a Log Analytics (ver `docs/monitoreo.md`) | Aparecen eventos de arranques anteriores | Ninguna |
+| **Start de la APP** | *Container Apps* → **Start** | `az containerapp start -n … -g …` | Estado `Running` | **No usar** salvo necesidad: ya escala sola desde cero |
+| **Stop de la APP** | *Container Apps* → **Stop** | `az containerapp stop -n … -g …` | Estado `Stopped` | ⚠️ **Riesgo de que el entorno quede marcado para auto-borrado.** Preferir dejarla en 0 réplicas |
+| **Nueva revisión (restart)** | **Application → Revisions → Create new revision** | `az containerapp revision restart -n … -g … --revision <rev>` | La revisión reinicia el contenedor | Corta el servicio unos segundos. Útil cuando la app arrancó mal |
+| **Encender la base** | *MySQL flexible servers* → `mysql-interview-backend` → **Start** | `az mysql flexible-server start -g rg-interview-app -n mysql-interview-backend` | `state = Ready` (tarda 1-2 min) | Empieza a cobrarse el cómputo |
+| **Detener la base** | Igual → **Stop** | `az mysql flexible-server stop -g rg-interview-app -n mysql-interview-backend` | `state = Stopped` | Deja de cobrarse el cómputo (sigue el storage). **No se pierden datos** |
+| **Eliminar la APP** | *Container Apps* → `interview-backend` → **Delete** | `az containerapp delete -n … -g … --yes` | Desaparece de la lista | ❌ **Irreversible.** Se pierden la configuración y los secretos. La imagen del ACR, la base y los logs **no** se pierden |
+| **Eliminar TODO** | *Resource groups* → `rg-interview-app` → **Delete resource group** | `az group delete --name rg-interview-app --yes` | El grupo desaparece | ❌ **Irreversible.** Borra ACR, app, entorno, MySQL y logs. Es la forma correcta de terminar el cuatrimestre |
+
+### Reglas de seguridad para operar
+
+1. **Nunca** eliminar recursos sin autorización explícita.
+2. **Antes de una demo:** encender la base → esperar `Ready` → recién ahí probar la aplicación.
+3. **El despliegue se hace desde el pipeline** (pestaña Actions de GitHub), no a mano. Si se despliega
+   manualmente, usar **siempre una etiqueta publicada por el CI**, nunca `latest`.
+4. Si un push no debe desplegarse, simplemente **no se marca la casilla** de deploy.
+
+### Sobre `script_az.py` del proyecto de referencia
+
+El proyecto de Go tenía un script de ~1400 líneas que construía, publicaba y desplegaba manualmente.
+**Ese script no se adaptó a propósito**, y la razón es el problema que ese mismo proyecto arrastraba:
+
+- El script local y el CI construían imágenes con **criterios de etiquetado distintos**, por lo que un
+  despliegue manual podía terminar usando una imagen diferente de la que había generado el pipeline.
+
+En este proyecto la responsabilidad está separada de forma estricta:
+
+| Tarea | Quién la hace |
+| :--- | :--- |
+| Construir la imagen, escanearla y publicarla | **GitHub Actions** (único lugar) |
+| Desplegar | **GitHub Actions** (job condicionado) |
+| Operar (logs, estado, encender/apagar la base, revertir, eliminar) | `scripts/admin.sh` |
+
+Así, **todo lo que corre en Azure pasó obligatoriamente por los tests y por Grype**.
