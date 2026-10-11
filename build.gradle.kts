@@ -41,6 +41,10 @@ extra["jackson-bom.version"] = "2.21.7"
 
 springBoot {
     mainClass.set("com.example.interviewback.InterviewBackApplication")
+    // Genera META-INF/build-info.properties, que Actuator publica en /actuator/info.
+    // Permite saber qué versión está corriendo consultando la aplicación
+    // (útil para comparar con la etiqueta de imagen desplegada en Azure).
+    buildInfo()
 }
 
 group = "com.example"

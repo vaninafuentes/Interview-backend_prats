@@ -88,7 +88,8 @@ El score se calcula según métricas base: vector de ataque (Red, Local), comple
 2. **Ejecución con Usuario No Privilegiado (`USER nonroot:nonroot`):**
    - Aunque existan vulnerabilidades en bibliotecas nativas de Debian (`libc6`, `libexpat1`), un atacante no tiene permisos de root en el host ni en el contenedor para instalar herramientas ni escalar privilegios.
 3. **Desacoplamiento de Secretos y Hardening de Endpoints:**
-   - La API solo expone `/api/auth/register`, `/api/auth/login` y `/actuator/health`. Cualquier otra ruta exige JWT firmado con algoritmo criptográfico simétrico.
+   - Las rutas públicas son únicamente `/api/auth/register`, `/api/auth/login`, `/actuator/health` (y sus sondas `liveness`/`readiness`) y `/actuator/info`. **Todas las demás exigen un JWT válido firmado con algoritmo simétrico HS256**, incluidas `/actuator/metrics` (que devuelve HTTP 403 sin token).
+   - **Mitigación adicional (11/10/2026):** el detalle del endpoint de salud dejó de exponerse públicamente. Con `show-details=when-authorized` y `roles=USER`, una petición anónima ve solo `{"status":"UP"}`, mientras que una autenticada ve el detalle completo (base de datos, disco). Antes, la configuración `always` publicaba sin autenticación el motor de base de datos utilizado, el espacio en disco del contenedor y la estructura interna de componentes.
 
 ### Justificación de Vulnerabilidades sin Solución Disponible:
 - **`spring-webmvc:6.2.9` (GHSA-pc63-qcmh-9cmg, GHSA-j9f9-w8pj-32f8):** Reportadas recientemente; la versión oficial del BOM de Spring Boot 3.5.4 aún no tiene publicada una release GA en Maven Central que las resuelva sin generar incompatibilidades de binario con el resto del framework.

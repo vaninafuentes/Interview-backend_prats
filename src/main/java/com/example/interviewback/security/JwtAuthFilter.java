@@ -7,13 +7,14 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
-import java.util.Collections;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -74,12 +75,19 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             return;
         }
 
-        // Crear objeto de autenticación y cargarlo en el SecurityContext
-        // Collections.emptyList() porque no manejamos roles por ahora
+        // Crear objeto de autenticación y cargarlo en el SecurityContext.
+        //
+        // Se asigna ROLE_USER: la MISMA autoridad que otorga el
+        // UserDetailsService de SecurityConfig. Antes se pasaba una lista
+        // vacía, lo que hacía que un usuario autenticado por JWT tuviera
+        // menos permisos que el mismo usuario autenticado por login.
+        // Gracias a esta autoridad, una petición con token válido puede
+        // acceder al detalle del endpoint de salud de Actuator
+        // (configurado con management.endpoint.health.roles=USER).
         UsernamePasswordAuthenticationToken authToken = new UsernamePasswordAuthenticationToken(
                 userOpt.get(),
                 null,
-                Collections.emptyList()
+                List.of(new SimpleGrantedAuthority("ROLE_USER"))
         );
         authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
         SecurityContextHolder.getContext().setAuthentication(authToken);
