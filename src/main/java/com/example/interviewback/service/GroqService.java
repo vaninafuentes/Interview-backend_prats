@@ -5,6 +5,7 @@ import com.example.interviewback.dto.InterviewFeedbackResponse;
 import com.example.interviewback.dto.GeneratedQuestionDto;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.owasp.encoder.Encode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -96,8 +97,17 @@ public class GroqService {
         if (valor == null) {
             return "null";
         }
-        // \p{Cntrl} coincide con todos los caracteres de control (incluye \n, \r, \t)
-        return valor.replaceAll("\\p{Cntrl}", "_");
+        // Encode.forJava() convierte los caracteres de control en su
+        // representación literal: un salto de línea real pasa a ser el texto
+        // "\n" (barra invertida + ene), que NO puede cortar la línea del log.
+        //
+        // Se prefiere esta librería al reemplazo manual por dos motivos:
+        //   1. Es la solución estándar recomendada por OWASP para CWE-117.
+        //   2. Además de neutralizar la inyección, deja VISIBLE el intento en
+        //      el log (se lee "\n" en lugar de un guion bajo), lo que ayuda al
+        //      análisis forense a distinguir un intento de ataque de un dato
+        //      normal.
+        return Encode.forJava(valor);
     }
 
     /**

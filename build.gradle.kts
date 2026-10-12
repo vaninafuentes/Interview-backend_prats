@@ -89,6 +89,12 @@ dependencies {
     // Validación de DTOs: @NotBlank, @Email, @Size, etc.
     implementation("org.springframework.boot:spring-boot-starter-validation")
 
+    // OWASP Java Encoder: neutraliza caracteres de control antes de escribir en
+    // logs (previene la "inyección de registros", CWE-117, detectada por CodeQL).
+    // Es la solución estándar recomendada por OWASP para este problema, pesa
+    // 38 KB y no tiene dependencias propias.
+    implementation("org.owasp.encoder:encoder:1.5.0")
+
     // JWT: generación y validación de tokens firmados con HS256
     implementation("io.jsonwebtoken:jjwt-api:0.12.6")
     runtimeOnly("io.jsonwebtoken:jjwt-impl:0.12.6")

@@ -439,48 +439,84 @@ consecuencias son: dificultar el análisis forense, engañar a las alertas autom
 `ERROR` y contaminar la evidencia. **No permite ejecutar código ni acceder a datos**: por eso la severidad
 es media y no crítica.
 
-**Corrección aplicada:** se agregó un método que neutraliza los caracteres de control antes de registrar:
+**Corrección aplicada:** se agregó el método `sanitizarParaLog()` en `GroqService`, que neutraliza los
+caracteres de control usando **OWASP Java Encoder**:
 
 ```java
 private static String sanitizarParaLog(String valor) {
     if (valor == null) {
         return "null";
     }
-    // \p{Cntrl} coincide con todos los caracteres de control (incluye \n, \r, \t)
-    return valor.replaceAll("\\p{Cntrl}", "_");
+    // Convierte los caracteres de control en su representación literal:
+    // un salto de línea real pasa a ser el texto "\n", que no corta la línea.
+    return Encode.forJava(valor);
 }
 ```
 
-Y se aplicó a **6 sentencias de log**: las 3 marcadas por CodeQL (`topic`, `difficulty`, `category` —datos del
-usuario— y el cuerpo de la respuesta de la API de IA) más otras 3 que registran cuerpos de respuesta HTTP
-externa (`GroqService.java:147`, `:204` y `:320`), que presentan el mismo riesgo.
+Se agregó la dependencia `org.owasp.encoder:encoder:1.5.0` (38 KB, sin dependencias propias), que es la
+**solución estándar recomendada por OWASP** para este problema. Se aplicó a **6 sentencias de log**: las 3
+marcadas por CodeQL (`topic`, `difficulty` y `category` —datos del usuario— más el cuerpo de la respuesta de
+la API de IA) y otras 3 que registran cuerpos de respuesta HTTP externa, que presentan el mismo riesgo.
 
-**Verificación del arreglo** (ejecutada, no supuesta):
+**Verificación del arreglo** (ejecutada contra la librería real, no supuesta):
 
-| Entrada | Salida registrada | ¿Queda algún carácter de control? |
+| Entrada | Lo que queda escrito en el log | ¿Queda algún carácter de control? |
 | :--- | :--- | :---: |
 | `java` | `java` | no |
-| `java\n2026-01-01 ERROR Falla grave` | `java_2026-01-01 ERROR Falla grave` | **no** |
-| `tema\r\nERROR inyectado` | `tema__ERROR inyectado` | **no** |
-| `tema\tcon\ttabulaciones` | `tema_con_tabulaciones` | **no** |
-| `tema\0con byte nulo` | `tema_con byte nulo` | **no** |
-| `null` | `null` | no |
+| `java\n2026-01-01 ERROR Falla grave` | `java\n2026-01-01 ERROR Falla grave` | **no** |
+| `tema\r\nERROR inyectado` | `tema\r\nERROR inyectado` | **no** |
+| `tema\tcon\ttabulaciones` | `tema\tcon\ttabulaciones` | **no** |
 
-El salto de línea se convierte en `_`, así que **la línea falsificada ya no puede existir**.
+El salto de línea real se convierte en el **texto literal `\n`**, así que la línea falsificada ya no puede
+existir.
 
-### 9.3 Cómo se cierran las alertas
+**Ventaja adicional sobre un reemplazo manual:** el intento de ataque **queda visible** en el log. Un
+analista que vea `tema\r\nERROR inyectado` sabe inmediatamente que alguien intentó falsificar una entrada.
+Si en cambio se reemplazaran los caracteres por guiones bajos, el intento quedaría **oculto** y sería
+indistinguible de un dato normal. Para el análisis forense, ver el ataque es mejor que taparlo.
+
+### 9.3 Por qué CodeQL volvió a marcar las mismas líneas
+
+Después de la primera corrección (que reemplazaba los caracteres de control con una expresión regular
+propia), CodeQL **cerró** las 3 alertas originales y **abrió 3 nuevas en las mismas líneas**.
+
+**Causa:** el análisis de *taint* sigue el recorrido de un dato contaminado desde su origen (la petición
+HTTP) hasta su destino (el log). Para saber si el dato llegó "limpio", necesita conocer los sanitizadores.
+**Solo reconoce los que tiene modelados**: una expresión regular propia, aunque funcione, no está en su
+modelo, así que sigue considerando el dato como contaminado.
+
+**Esto no es un defecto del código ni una falla de la herramienta**: es una **limitación conocida y esperable
+del análisis estático**. El analizador no ejecuta el programa: no puede deducir la semántica de una expresión
+regular arbitraria.
+
+**Cómo se resolvió:** adoptando el sanitizador estándar que sí está modelado (`Encode.forJava` de OWASP), lo
+que además trae un beneficio real (el intento queda visible, como se explicó arriba). No fue "escribir código
+para contentar a la herramienta": fue **elegir la solución estándar de la industria en lugar de una
+improvisación propia**, que resulta mejor por los dos motivos.
+
+**Lección para la defensa:** las herramientas de análisis estático **proponen**, no deciden. Un hallazgo
+puede ser un falso positivo (el caso del CSRF) y una corrección válida puede no ser reconocida. El criterio
+técnico humano sigue siendo el que cierra la decisión.
+
+### 9.4 Cómo se cierran las alertas
 
 | Alerta | Acción | Efecto |
 | :--- | :--- | :--- |
-| CSRF desactivado | **Descartar** en GitHub (*Won't fix* + justificación) | Queda registrada la decisión y el motivo |
-| Inyección de registros ×3 | **Corregir el código** (hecho) | Se **cierran solas** en el siguiente análisis |
+| CSRF desactivado | **Descartada** en GitHub (*Won't fix* + justificación) | Queda registrada la decisión y el motivo |
+| Inyección de registros ×3 (primer intento) | Corregidas con una expresión regular propia | ⚠️ Las alertas originales se **cerraron**, pero el analizador **abrió nuevas en las mismas líneas** por no reconocer el sanitizador propio |
+| Inyección de registros ×3 (segundo intento) | **OWASP Java Encoder** (sanitizador modelado) | Se cierran solas en el siguiente análisis |
 
 **Portal:** pestaña **Security** → *Code scanning alerts* → clic en la alerta → botón **Dismiss alert** →
 elegir el motivo → escribir el comentario → confirmar.
 
-### 9.4 Resumen del tratamiento
+### 9.5 Resumen del tratamiento
 
 | Análisis | Hallazgos | Reales | Falsos positivos | Corregidos |
 | :--- | :---: | :---: | :---: | :---: |
 | **Grype** (dependencias e imagen) | 186 → 115 | 73 resueltas | — | ✅ |
-| **CodeQL** (código propio) | 4 | 3 | 1 (CSRF, justificado) | ✅ |
+| **CodeQL** (código propio) | 4 en el primer análisis | 3 (inyección de registros) | 1 (CSRF, descartado con justificación) | ✅ con OWASP Java Encoder |
+
+**Nota sobre el conteo de CodeQL:** el total de alertas *abiertas* a lo largo del proceso fue 7 (4 del primer
+análisis + 3 reabiertas en el segundo), pero las **vulnerabilidades reales detectadas fueron 3**, todas de la
+misma familia (inyección de registros) en 3 líneas distintas. La reapertura fue consecuencia de que el
+analizador no reconoció el primer sanitizador, no de que existieran más problemas.
