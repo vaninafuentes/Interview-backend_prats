@@ -2,6 +2,10 @@ package com.example.interviewback.service;
 
 import com.example.interviewback.dto.InterviewAnswerRequest;
 import com.example.interviewback.dto.InterviewFeedbackResponse;
+import com.example.interviewback.dto.InterviewHintRequest;
+import com.example.interviewback.dto.InterviewHintResponse;
+import com.example.interviewback.dto.InterviewHistoryDto;
+import com.example.interviewback.dto.InterviewStatsDto;
 import com.example.interviewback.model.InterviewSession;
 import com.example.interviewback.model.Question;
 import com.example.interviewback.repository.InterviewSessionRepository;
@@ -9,8 +13,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.util.List;
 import java.util.stream.Collectors;
 
 /**
@@ -49,6 +55,11 @@ public class InterviewService {
      * @param request DTO con la respuesta y los datos de la pregunta
      * @param userId  ID del usuario autenticado
      */
+    // Sin @Transactional a propósito: este método llama a la API de IA, que es
+    // lenta y externa. Mantener abierta una transacción durante esa llamada
+    // retendría una conexión del pool sin usarla, y con pocas conexiones
+    // disponibles alcanzaría para agotarlo. Cada operación de base (leer la
+    // pregunta, guardar la sesión) se ejecuta en su propia transacción.
     public InterviewFeedbackResponse evaluate(InterviewAnswerRequest request, Long userId) {
         log.info("[InterviewService] evaluate() | userId={} | questionId={} | hasText={}",
                 userId, request.getQuestionId(), request.getQuestionText() != null);
@@ -113,7 +124,8 @@ public class InterviewService {
     /**
      * Obtiene el historial completo de entrevistas del usuario autenticado.
      */
-    public java.util.List<com.example.interviewback.dto.InterviewHistoryDto> getUserHistory(Long userId) {
+    @Transactional(readOnly = true)
+    public List<InterviewHistoryDto> getUserHistory(Long userId) {
         return sessionRepository.findByUserIdOrderByAnsweredAtDesc(userId)
                 .stream()
                 .map(this::toHistoryDto)
@@ -123,11 +135,12 @@ public class InterviewService {
     /**
      * Calcula estadísticas consolidadas del usuario para el dashboard.
      */
-    public com.example.interviewback.dto.InterviewStatsDto getUserStats(Long userId) {
-        java.util.List<InterviewSession> sessions = sessionRepository.findByUserIdOrderByAnsweredAtDesc(userId);
+    @Transactional(readOnly = true)
+    public InterviewStatsDto getUserStats(Long userId) {
+        List<InterviewSession> sessions = sessionRepository.findByUserIdOrderByAnsweredAtDesc(userId);
 
         if (sessions.isEmpty()) {
-            return new com.example.interviewback.dto.InterviewStatsDto(
+            return new InterviewStatsDto(
                     0, 0.0, 0, 0, java.util.Collections.emptyMap(), java.util.Collections.emptyList()
             );
         }
@@ -164,12 +177,12 @@ public class InterviewService {
         int currentStreak = calculateStreak(sessions);
 
         // Últimas 5 sesiones para actividad reciente
-        java.util.List<com.example.interviewback.dto.InterviewHistoryDto> recent = sessions.stream()
+        List<InterviewHistoryDto> recent = sessions.stream()
                 .limit(5)
                 .map(this::toHistoryDto)
                 .collect(Collectors.toList());
 
-        return new com.example.interviewback.dto.InterviewStatsDto(
+        return new InterviewStatsDto(
                 totalSessions, avgScore, currentStreak, bestScore, categoryAverages, recent
         );
     }
@@ -177,18 +190,19 @@ public class InterviewService {
     /**
      * Genera una pista inteligente para una pregunta.
      */
-    public com.example.interviewback.dto.InterviewHintResponse getHint(com.example.interviewback.dto.InterviewHintRequest request) {
+    // Sin @Transactional por el mismo motivo que evaluate: llama a la API de IA.
+    public InterviewHintResponse getHint(InterviewHintRequest request) {
         String hint = groqService.generateHint(request.getQuestionText(), request.getCategory());
-        return new com.example.interviewback.dto.InterviewHintResponse(hint);
+        return new InterviewHintResponse(hint);
     }
 
-    private com.example.interviewback.dto.InterviewHistoryDto toHistoryDto(InterviewSession session) {
-        java.util.List<String> tipsList = java.util.Collections.emptyList();
+    private InterviewHistoryDto toHistoryDto(InterviewSession session) {
+        List<String> tipsList = java.util.Collections.emptyList();
         if (session.getTips() != null && !session.getTips().isBlank()) {
             tipsList = java.util.Arrays.asList(session.getTips().split("\\|"));
         }
 
-        return new com.example.interviewback.dto.InterviewHistoryDto(
+        return new InterviewHistoryDto(
                 session.getId(),
                 session.getQuestionId(),
                 session.getQuestionText() != null ? session.getQuestionText() : "Pregunta de práctica",
@@ -203,7 +217,7 @@ public class InterviewService {
         );
     }
 
-    private int calculateStreak(java.util.List<InterviewSession> sessions) {
+    private int calculateStreak(List<InterviewSession> sessions) {
         java.util.Set<java.time.LocalDate> dates = sessions.stream()
                 .map(s -> s.getAnsweredAt().toLocalDate())
                 .collect(Collectors.toCollection(java.util.TreeSet::new));

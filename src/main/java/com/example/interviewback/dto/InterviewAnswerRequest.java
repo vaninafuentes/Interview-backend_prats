@@ -3,25 +3,14 @@ package com.example.interviewback.dto;
 import jakarta.validation.constraints.NotBlank;
 
 /**
- * DTO para la petición de evaluación de respuesta.
+ * Respuesta del usuario a una pregunta de entrevista.
  *
- * Soporta dos modos:
- *
- * Modo 1 — Pregunta de base de datos (questionId provisto):
- * {
- *   "questionId": 5,
- *   "userAnswer": "Un ArrayList es..."
- * }
- *
- * Modo 2 — Pregunta generada por IA (sin questionId):
- * {
- *   "questionText":       "¿Qué diferencia hay entre state y props?",
- *   "questionCategory":   "React Native",
- *   "questionDifficulty": "MEDIUM",
- *   "userAnswer":         "State es interno y mutable..."
- * }
- *
- * La validación de qué campos son necesarios se hace en InterviewService.
+ * <p>Admite dos modos, que resuelve {@code InterviewService}:
+ * <ul>
+ *   <li>Pregunta existente: se envía {@code questionId} y el texto se lee de la base.</li>
+ *   <li>Pregunta generada al vuelo: se envían {@code questionText}, {@code questionCategory}
+ *       y {@code questionDifficulty}.</li>
+ * </ul>
  */
 public class InterviewAnswerRequest {
 

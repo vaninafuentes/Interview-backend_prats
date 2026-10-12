@@ -3,28 +3,31 @@ package com.example.interviewback.controller;
 import com.example.interviewback.dto.GeneratedQuestionDto;
 import com.example.interviewback.dto.InterviewAnswerRequest;
 import com.example.interviewback.dto.InterviewFeedbackResponse;
+import com.example.interviewback.dto.InterviewHintRequest;
+import com.example.interviewback.dto.InterviewHintResponse;
+import com.example.interviewback.dto.InterviewHistoryDto;
+import com.example.interviewback.dto.InterviewStatsDto;
 import com.example.interviewback.dto.QuestionGenerationRequest;
-import com.example.interviewback.model.User;
+import com.example.interviewback.security.AuthenticatedUser;
 import com.example.interviewback.service.GroqService;
 import com.example.interviewback.service.InterviewService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.Authentication;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.server.ResponseStatusException;
-import org.springframework.http.HttpStatus;
 
 import java.util.List;
 
 /**
- * Controlador REST para la funcionalidad de práctica de entrevistas.
+ * Endpoints de práctica de entrevistas.
  *
- * Endpoints:
- *   POST /api/interview/generate  → genera preguntas con Groq AI (requiere JWT)
- *   POST /api/interview/evaluate  → evalúa una respuesta con Groq AI (requiere JWT)
+ * <p>El usuario autenticado se recibe con {@code @AuthenticationPrincipal}, que
+ * lo toma del contexto de seguridad que carga {@code JwtAuthFilter}. Todas las
+ * rutas de este controlador requieren token válido.
  */
 @RestController
 @RequestMapping("/api/interview")
@@ -38,104 +41,43 @@ public class InterviewController {
         this.groqService = groqService;
     }
 
-    /**
-     * POST /api/interview/generate
-     *
-     * Genera preguntas de entrevista usando Groq AI según el tema,
-     * dificultad y cantidad indicados por el usuario.
-     *
-     * @param request        body JSON con topic, difficulty, count
-     * @param authentication usuario autenticado via JWT
-     * @return lista de preguntas generadas
-     */
     @PostMapping("/generate")
     public ResponseEntity<List<GeneratedQuestionDto>> generateQuestions(
-            @Valid @RequestBody QuestionGenerationRequest request,
-            Authentication authentication
+            @Valid @RequestBody QuestionGenerationRequest request
     ) {
-        if (authentication == null || !(authentication.getPrincipal() instanceof User)) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "No autenticado");
-        }
-
-        List<GeneratedQuestionDto> questions = groqService.generateQuestions(
+        return ResponseEntity.ok(groqService.generateQuestions(
                 request.getTopic(),
                 request.getDifficulty(),
                 request.getCount()
-        );
-        return ResponseEntity.ok(questions);
+        ));
     }
 
-    /**
-     * POST /api/interview/evaluate
-     *
-     * Recibe la respuesta del usuario a una pregunta de entrevista,
-     * la evalúa con Groq AI y devuelve el feedback.
-     *
-     * Soporta dos modos:
-     *   - Pregunta de BD: { questionId, userAnswer }
-     *   - Pregunta generada: { questionText, questionCategory, questionDifficulty, userAnswer }
-     *
-     * @param request        body JSON con los datos de la pregunta y la respuesta
-     * @param authentication usuario autenticado via JWT
-     * @return feedback con score, criterios, fortalezas, errores y recomendaciones
-     */
     @PostMapping("/evaluate")
     public ResponseEntity<InterviewFeedbackResponse> evaluate(
             @Valid @RequestBody InterviewAnswerRequest request,
-            Authentication authentication
+            @AuthenticationPrincipal AuthenticatedUser user
     ) {
-        if (authentication == null || !(authentication.getPrincipal() instanceof User user)) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "No autenticado");
-        }
-
-        InterviewFeedbackResponse feedback = interviewService.evaluate(request, user.getId());
-        return ResponseEntity.ok(feedback);
+        return ResponseEntity.ok(interviewService.evaluate(request, user.id()));
     }
 
-    /**
-     * GET /api/interview/history
-     * Devuelve el historial de preguntas respondidas por el usuario autenticado.
-     */
-    @org.springframework.web.bind.annotation.GetMapping("/history")
-    public ResponseEntity<List<com.example.interviewback.dto.InterviewHistoryDto>> getHistory(
-            Authentication authentication
+    @GetMapping("/history")
+    public ResponseEntity<List<InterviewHistoryDto>> getHistory(
+            @AuthenticationPrincipal AuthenticatedUser user
     ) {
-        if (authentication == null || !(authentication.getPrincipal() instanceof User user)) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "No autenticado");
-        }
-
-        return ResponseEntity.ok(interviewService.getUserHistory(user.getId()));
+        return ResponseEntity.ok(interviewService.getUserHistory(user.id()));
     }
 
-    /**
-     * GET /api/interview/stats
-     * Devuelve métricas calculadas (racha, promedio, sesiones totales, etc.) para el dashboard.
-     */
-    @org.springframework.web.bind.annotation.GetMapping("/stats")
-    public ResponseEntity<com.example.interviewback.dto.InterviewStatsDto> getStats(
-            Authentication authentication
+    @GetMapping("/stats")
+    public ResponseEntity<InterviewStatsDto> getStats(
+            @AuthenticationPrincipal AuthenticatedUser user
     ) {
-        if (authentication == null || !(authentication.getPrincipal() instanceof User user)) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "No autenticado");
-        }
-
-        return ResponseEntity.ok(interviewService.getUserStats(user.getId()));
+        return ResponseEntity.ok(interviewService.getUserStats(user.id()));
     }
 
-    /**
-     * POST /api/interview/hint
-     * Genera una pista orientativa para la pregunta en curso sin spoilear la respuesta.
-     */
     @PostMapping("/hint")
-    public ResponseEntity<com.example.interviewback.dto.InterviewHintResponse> getHint(
-            @Valid @RequestBody com.example.interviewback.dto.InterviewHintRequest request,
-            Authentication authentication
+    public ResponseEntity<InterviewHintResponse> getHint(
+            @Valid @RequestBody InterviewHintRequest request
     ) {
-        if (authentication == null || !(authentication.getPrincipal() instanceof User)) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "No autenticado");
-        }
-
         return ResponseEntity.ok(interviewService.getHint(request));
     }
 }
-

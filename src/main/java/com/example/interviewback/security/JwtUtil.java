@@ -12,15 +12,21 @@ import java.nio.charset.StandardCharsets;
 import java.util.Date;
 
 /**
- * Utilidad para generar y validar JSON Web Tokens (JWT).
+ * Genera y valida los tokens JWT.
  *
- * Algoritmo: HS256 (HMAC + SHA-256)
- * La clave secreta se lee de application.properties para no hardcodearla.
+ * <p>La firma es HMAC-SHA. El algoritmo concreto lo elige la librería (jjwt)
+ * según el tamaño de la clave: con la clave actual de 48 bytes usa <b>HS384</b>;
+ * con una de 32 bytes usaría HS256. Una clave de menos de 32 bytes es rechazada,
+ * lo que evita firmas débiles.
  *
- * Estructura del JWT:
- *   Header: { alg: "HS256", typ: "JWT" }
- *   Payload: { sub: "email", name: "...", iat: ..., exp: ... }
- *   Signature: HMAC-SHA256(base64(header) + "." + base64(payload), secret)
+ * <pre>
+ *   Header:    { alg: "HS384", typ: "JWT" }
+ *   Payload:   { sub: "email", name: "...", id: ..., iat: ..., exp: ... }
+ *   Signature: HMAC-SHA384( base64(header) + "." + base64(payload), clave )
+ * </pre>
+ *
+ * <p>El payload <b>no está cifrado</b>, solo codificado en Base64: cualquiera
+ * puede leerlo. Lo que impide modificarlo sin la clave es la firma.
  */
 @Component
 public class JwtUtil {
@@ -49,7 +55,7 @@ public class JwtUtil {
                 .claim("id", user.getId())         // claim custom con el ID
                 .issuedAt(new Date())              // "iat" → fecha de emisión
                 .expiration(new Date(System.currentTimeMillis() + expirationMs)) // "exp"
-                .signWith(getSigningKey())         // firma con HS256
+                .signWith(getSigningKey())         // firma con HMAC-SHA; jjwt elige el algoritmo segun la clave
                 .compact();
     }
 

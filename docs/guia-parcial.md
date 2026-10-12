@@ -366,9 +366,10 @@ az containerapp show -n interview-backend -g rg-interview-app \
 
 **Técnica:** Un JWT tiene tres partes separadas por puntos: `header.payload.signature`.
 
-- **Header:** algoritmo y tipo (`HS256`, `JWT`).
+- **Header:** algoritmo y tipo (`HS384` en este proyecto, `JWT`). El algoritmo se deriva del tamaño de
+  la clave: con 48 bytes, jjwt usa HS384; con 32 usaría HS256.
 - **Payload:** los *claims* — en nuestro caso `sub` (email), `name`, `id`, `iat` (emitido) y `exp` (expira).
-- **Signature:** HMAC-SHA256 sobre el header y el payload, usando una **clave secreta** que solo conoce el servidor.
+- **Signature:** HMAC-SHA384 sobre el header y el payload, usando una **clave secreta** que solo conoce el servidor.
 
 **Lo importante:** el payload **no está cifrado**, está codificado en Base64. Cualquiera puede leerlo. Lo que
 garantiza la firma es que **nadie puede modificarlo** sin la clave secreta.
@@ -389,7 +390,28 @@ secreta) y que **no haya expirado** (`exp`). Se ejecuta en `JwtAuthFilter`, en c
 **No se consulta la base de datos para validar la firma** — es una verificación criptográfica local, sin
 acceso a disco ni a red. La consulta al repositorio es solo para cargar los datos del usuario.
 
-**Demostración:** modificar el último carácter del token y ver el 403.
+**Demostración:** modificar un carácter **en el medio de la firma** y ver el 403. (Ver la nota de abajo:
+agregar caracteres al final no sirve para demostrarlo.)
+
+> **Detalle fino que conviene conocer (y que impresiona en la defensa):** si al token se le **agrega** un
+> carácter al final, se obtiene la misma respuesta 200. No es una vulnerabilidad, y conviene entender por qué:
+> la firma son 48 bytes codificados en Base64; el decodificador **ignora un carácter sobrante** al final, así
+> que el token decodificado son **exactamente los mismos bytes** y la firma sigue siendo válida. Es decir: el
+> atacante recibiría el mismo token que ya tenía, sin ningún privilegio extra.
+>
+> Lo que **sí** se rechaza (verificado, HTTP 403) es cualquier cambio que altere los bytes: modificar un
+> carácter en el medio de la firma, modificar el payload, o agregar tres caracteres (que cambian la longitud
+> decodificada). **No existe forma de forjar un token nuevo sin la clave.**
+
+**Verificado contra la aplicación real:**
+
+| Token | Resultado |
+| :--- | :---: |
+| Válido | 200 |
+| Válido + 1 carácter al final | 200 (mismos bytes decodificados) |
+| Válido + 3 caracteres al final | **403** |
+| Carácter cambiado en el medio de la firma | **403** |
+| Payload modificado | **403** |
 
 ---
 
@@ -1095,3 +1117,357 @@ az containerapp update -n interview-backend -g rg-interview-app \
    decide.
 3. **"El pipeline verifica que la aplicación responda de verdad"** — no se declara exitoso un despliegue
    hasta que el health check devuelve HTTP 200.
+
+---
+---
+
+# 📋 ANEXO — CRUCE CON EL CHECKLIST DE LA CLASE
+
+Verificación de cada punto del checklist de revisión técnica contra el código real del proyecto.
+
+**Leyenda:** ✅ Cumple · ➖ No aplica (justificado) · 🔧 Completado en esta revisión
+
+---
+
+## 1. Clase principal — `InterviewBackApplication.java` ✅
+
+| Punto | Dónde |
+| :--- | :--- |
+| Punto de entrada con `@SpringBootApplication` y `main()` | `InterviewBackApplication.java` |
+| Cómo Spring inicia el `ApplicationContext` | El `main()` llama a `SpringApplication.run()`, que crea el contexto, **escanea el paquete base** y registra los componentes |
+| `@Configuration`, `@Bean`, `@Component`, `@Service`, `@Autowired` | Ver el cuadro de abajo |
+| Inyección de dependencias (no usar `new`) | Todos los servicios y controladores reciben sus dependencias por constructor |
+
+**Qué significa cada anotación en este proyecto:**
+
+| Anotación | Dónde se usa | Qué hace |
+| :--- | :--- | :--- |
+| `@SpringBootApplication` | `InterviewBackApplication` | Combina `@Configuration` + `@EnableAutoConfiguration` + `@ComponentScan` |
+| `@Configuration` | `SecurityConfig`, `CorsConfig`, `AppConfig` | Declara una clase que define beans |
+| `@Bean` | `PasswordEncoder`, `UserDetailsService`, `RestTemplate`… | Registra un objeto para que Spring lo gestione |
+| `@Service` | `AuthService`, `QuestionService`, `InterviewService`, `GroqService` | Componente de la capa de negocio |
+| `@RestController` | `AuthController`, `QuestionController`, `InterviewController` | Componente web que devuelve JSON |
+| `@Repository` | Los tres repositorios | Componente de acceso a datos |
+| `@Component` | `JwtUtil`, `JwtAuthFilter` | Componente genérico |
+| `@Autowired` | **No se usa** — ver abajo | |
+
+**Por qué no aparece `@Autowired`:** con **un solo constructor**, Spring lo usa automáticamente para inyectar.
+Escribirlo sería redundante. Se prefiere además la inyección por constructor sobre la de campo porque las
+dependencias quedan `final` (inmutables), son visibles en la firma y la clase se puede instanciar en un test
+sin levantar Spring.
+
+---
+
+## 2. Configuración general y beans ✅
+
+Clases `@Configuration`: `SecurityConfig`, `CorsConfig`, `AppConfig`.
+
+| Punto | Respuesta |
+| :--- | :--- |
+| Beans reutilizables con `@Bean`, especialmente `PasswordEncoder` | `SecurityConfig.passwordEncoder()` devuelve un `BCryptPasswordEncoder` |
+| Diferencia entre registrar un bean e instanciar un objeto | Un **bean** lo crea y administra Spring: una sola instancia compartida (singleton). Un `new` crea un objeto que nadie más conoce ni puede reemplazar |
+| Alcance singleton por defecto | Sí: `PasswordEncoder`, `RestTemplate` y `UserDetailsService` son **una sola instancia** para toda la aplicación |
+
+**Por qué importa que `PasswordEncoder` sea un bean:** `AuthService` lo recibe por constructor y Spring le
+entrega **la misma instancia** que usa `SecurityConfig` para el login. Si cada uno hiciera `new
+BCryptPasswordEncoder()`, podrían configurarse distinto y el login fallaría.
+
+---
+
+## 3. Servicios e inyección de dependencias ✅
+
+| Punto | Dónde |
+| :--- | :--- |
+| Servicios con `@Service` | Los cuatro de `service/` |
+| Inyección de repositorios y otros servicios por constructor | `AuthService` recibe `UserRepository`, `PasswordEncoder` y `JwtUtil` |
+| Evitar `new` en los controladores | Ningún controlador crea servicios con `new` |
+| `@Autowired`, inyección por constructor y atributos `final` | Campos `private final`; sin `@Autowired` (constructor único) |
+| Lombok | **No se usa** ➖ — los DTOs son `record` de Java (inmutables y con menos código que Lombok). No hace falta agregarlo |
+
+---
+
+## 4. Servicio de usuarios y `UserDetailsService` ✅
+
+| Punto | Dónde |
+| :--- | :--- |
+| Servicio de usuarios conectado con Spring Security | `SecurityConfig`, bean `userDetailsService` |
+| `UserDetailsService` o mecanismo equivalente | Se implementa como **lambda**: `email -> userRepository.findByEmail(email)...` |
+| Recuperar usuarios desde la base | `UserRepository.findByEmail()` |
+| `loadUserByUsername()` | Es el método de la interfaz; acá la lambda **es** esa implementación |
+| Qué pasa si el usuario no existe | Se lanza `UsernameNotFoundException` → el login responde **401** con un mensaje genérico (no revela si el email existe) |
+
+---
+
+## 5. Entidad `User` y seguridad de cuentas ✅ ➖
+
+| Punto | Estado |
+| :--- | :--- |
+| Atributos de usuario y contraseña | ✅ `id`, `name`, `email`, `password` |
+| Guardar contraseñas hasheadas | ✅ BCrypt, con sal automática (`PasswordEncoder.encode()`) |
+| `UserDetails`: ¿lo implementa la entidad? | ➖ **No, y no hace falta.** El propio material de la cátedra aclara que puede usarse un adaptador. Acá el adaptador es la lambda del `UserDetailsService`, y en las peticiones autenticadas el principal es `AuthenticatedUser` |
+| Estados de cuenta (habilitada, no bloqueada, no expirada) | ➖ **No aplica**: el sistema no tiene bloqueo ni vencimiento de cuentas. Spring los asume habilitados por defecto |
+| Métodos requeridos y `@Override` | ✅ `@Override` en `doFilterInternal`, `addCorsMappings` |
+| Roles solo si el sistema necesita distintos accesos | ➖ **No los necesita.** Existe un único tipo de usuario, por eso las reglas exigen *estar autenticado* y no un rol. El `ROLE_USER` que se asigna es uniforme y sirve para que Spring construya el usuario y para restringir el detalle del health |
+
+---
+
+## 6. Entidades, JPA e Hibernate ✅
+
+| Punto | Dónde |
+| :--- | :--- |
+| `@Entity` | `User`, `Question`, `InterviewSession` |
+| `@Table` y `@Column` | `@Table(name = "users")`, `@Column(nullable = false, unique = true)` |
+| `@Id` y generación de identificadores | `@GeneratedValue(strategy = GenerationType.IDENTITY)` |
+| `IDENTITY` vs secuencias | `IDENTITY` delega en el `AUTO_INCREMENT` de MySQL: válido y lo más simple para este motor. Las secuencias aplican a bases como PostgreSQL u Oracle |
+| JPA vs Spring Data JPA vs Hibernate | Ver el cuadro de abajo |
+| Actualización del esquema | `spring.jpa.hibernate.ddl-auto=update` — Hibernate compara las entidades con el esquema y agrega lo que falta al arrancar |
+
+| Concepto | Qué es |
+| :--- | :--- |
+| **JPA** | La **especificación** (el conjunto de reglas e interfaces) |
+| **Hibernate** | La **implementación** de esa especificación (el ORM que hace el trabajo) |
+| **Spring Data JPA** | Una **capa sobre JPA** que genera los repositorios: se declara la interfaz y no se escribe la implementación |
+
+---
+
+## 7. Repositorios y operaciones de base de datos ✅ 🔧
+
+| Punto | Dónde |
+| :--- | :--- |
+| Repositorios Spring Data JPA | Los tres, extendiendo `JpaRepository` |
+| Búsquedas necesarias | `findByEmail`, `findByUserIdOrderByAnsweredAtDesc`, `countByUserIdAndQuestionId` |
+| Obtener, guardar y actualizar entidades | `save()`, `findById()`, `findAll()` heredados |
+| `@Transactional` y `readOnly = true` | 🔧 **Agregado en esta revisión** |
+| Diferencia entre lectura y transacción que modifica | Ver abajo |
+
+**Dónde se aplicó `@Transactional`:**
+
+| Método | Anotación | Por qué |
+| :--- | :--- | :--- |
+| `AuthService.register` | `@Transactional` | Verifica si el email existe **y después** inserta: dentro de una transacción, dos registros simultáneos con el mismo email no pueden superar la verificación a la vez |
+| `AuthService.login` | `readOnly = true` | Solo lee |
+| `QuestionService.getAllQuestions` / `getQuestionById` | `readOnly = true` | Solo leen |
+| `QuestionService.createQuestion` | `@Transactional` | Escribe |
+| `InterviewService.getUserHistory` / `getUserStats` | `readOnly = true` | Solo leen |
+| `InterviewService.evaluate` / `getHint` | **Sin anotación, a propósito** | Llaman a la API de IA (lenta y externa). Mantener una transacción abierta durante esa llamada retendría una conexión del pool sin usarla; con un pool de 10 conexiones, alcanzaría para agotarlo. Cada operación de base se ejecuta en su propia transacción |
+
+> ⚠️ **CORRECCIÓN IMPORTANTE —`readOnly = true` NO evita inyección SQL.**
+>
+> Es una **optimización**, no una defensa. Le indica a Hibernate que la transacción no va a modificar datos,
+> con dos efectos: **omite el *dirty checking*** (no compara cada entidad cargada contra su estado original
+> al terminar) y permite que el driver o la base deriven la operación a una **réplica de lectura**.
+>
+> Quien evita la inyección SQL es usar **consultas parametrizadas**. En este proyecto eso lo garantiza
+> **Spring Data JPA / Hibernate**: `findByEmail(email)` no concatena el valor en la consulta, sino que lo
+> envía como **parámetro** al `PreparedStatement` del driver. Por eso un email como
+> `' OR 1=1 --` se busca como texto literal y no altera la consulta.
+
+---
+
+## 8. Configuración de Spring Security ✅
+
+| Punto | Dónde |
+| :--- | :--- |
+| `SecurityFilterChain` | `SecurityConfig.securityFilterChain()` |
+| Endpoints públicos y protegidos | `.requestMatchers(...).permitAll()` + `.anyRequest().authenticated()` |
+| `AuthenticationProvider` | Bean `authenticationProvider`, un `DaoAuthenticationProvider` con nuestro `UserDetailsService` |
+| `PasswordEncoder` y mecanismo de autenticación | `BCryptPasswordEncoder`; el login usa el `AuthenticationManager` |
+| Filtro JWT en la cadena | `.addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)` |
+| **Autenticación vs autorización** | Ver abajo |
+
+> **Autenticación** responde *"¿quién sos?"* → la resuelve `JwtAuthFilter` validando el token.
+> **Autorización** responde *"¿podés hacer esto?"* → la resuelve `SecurityConfig` con las reglas de acceso.
+> Están separadas a propósito: el filtro **no rechaza** nada, solo autentica; el rechazo (403) lo decide la
+> configuración en un único lugar.
+
+---
+
+## 9. CORS ✅ 🔧
+
+| Punto | Estado |
+| :--- | :--- |
+| Orígenes autorizados | ✅ Configurables con la variable `CORS_ALLOWED_ORIGINS` |
+| Métodos HTTP permitidos | ✅ `GET, POST, PUT, DELETE, OPTIONS` |
+| Cabeceras, especialmente `Authorization` | ✅ permitidas |
+| Preflight `OPTIONS` | ✅ `SecurityConfig` exime `OPTIONS` de autenticación; sin eso, el navegador recibiría 403 en el preflight y nunca haría la petición real |
+| Evitar configuraciones demasiado permisivas en producción | 🔧 Se hizo configurable. **Justificación de por qué `*` es aceptable acá:** el riesgo que CORS previene es que un sitio ajeno haga peticiones **aprovechando las cookies del navegador**. Esta API no usa cookies: el token viaja en la cabecera `Authorization`, que un sitio externo no puede agregar. Al desplegar un cliente web, alcanza con setear la variable |
+
+---
+
+## 10. Servicio de JWT ✅ 🔧
+
+| Punto | Dónde / Respuesta |
+| :--- | :--- |
+| Generar el JWT tras autenticar | `JwtUtil.generateToken()`, invocado desde `AuthService` |
+| Firmar con una clave gestionada de forma segura | Clave en `application.properties` como `${JWT_SECRET:...}`, inyectada desde el secreto del Container App en producción. **Nunca en el código** |
+| Validar firma, expiración y claims | `isTokenValid()` → `verifyWith(clave)` valida la firma y `parseSignedClaims` rechaza si expiró |
+| `sub`, `iat`, `exp` | `sub` = email, `iat` = emisión, `exp` = expiración (7 días) |
+| `audience` | ➖ **No se usa.** El material de la cátedra lo explica pero no confirma que sea obligatorio. Tendría sentido si la API fuera consumida por varias aplicaciones distintas y se quisiera restringir el token a una |
+| Dependencia y versión | `io.jsonwebtoken:jjwt-api / impl / jackson` **0.12.6** |
+| Identificar al usuario sin datos sensibles | El payload lleva email, nombre e id. **No lleva la contraseña ni el hash** |
+
+**Nota sobre el algoritmo:** es **HMAC-SHA**. El algoritmo exacto lo elige jjwt según el tamaño de la clave:
+con la clave actual de 48 bytes usa **HS384**; con una de 32 bytes usaría HS256. Verificado decodificando el
+header de un token real.
+
+---
+
+## 11. Filtro de autenticación JWT ✅
+
+| Punto | Dónde |
+| :--- | :--- |
+| Interceptar las peticiones | `OncePerRequestFilter` (garantiza una sola ejecución por petición) |
+| Obtener el token del header | `extraerToken()` lee `Authorization: Bearer ` |
+| Validar antes de considerar autenticada | `jwtUtil.isTokenValid(token)` |
+| Recuperar la identidad y cargar el usuario | `userRepository.findByEmail()` |
+| Registrar en `SecurityContextHolder` | `SecurityContextHolder.getContext().setAuthentication(...)` |
+| Token ausente, inválido o vencido | En los tres casos **deja pasar la petición sin autenticar**, y `SecurityConfig` responde **403** |
+
+---
+
+## 12. Controlador de autenticación ✅
+
+| Punto | Dónde |
+| :--- | :--- |
+| Login que consulta las credenciales | `AuthService.login()` → `findByEmail` + `passwordEncoder.matches()` |
+| Devolver un JWT tras autenticar | `AuthResponse` con el token (201 en registro, 200 en login) |
+| Endpoints públicos y resto protegido | `SecurityConfig` |
+| Recuperar el usuario autenticado | `GET /api/auth/me` con `@AuthenticationPrincipal` |
+| Comprobar la validez del token desde el cliente | `/api/auth/me`: si responde 200, el token sigue vigente |
+| Códigos HTTP | **201** registro · **200** login y consultas · **401** credenciales inválidas · **403** sin token o token inválido · **409** email ya registrado · **404** recurso inexistente |
+
+---
+
+## 16. Configuración centralizada ✅
+
+Un solo archivo, `application.properties`, con todo lo pedido:
+
+| Punto | Propiedades |
+| :--- | :--- |
+| URL, usuario y contraseña de la base por variables de entorno | `spring.datasource.url / username / password` con `${VARIABLE:default}` |
+| Propiedades de JPA/Hibernate y gestión del esquema | `ddl-auto`, `show-sql`, `open-in-view=false` |
+| Propiedades del JWT | `jwt.secret`, `jwt.expiration-ms` |
+| Parámetros del pool | `spring.datasource.hikari.*` (6 parámetros) |
+| Salud, métricas y observabilidad | `management.endpoint.*`, `management.metrics.tags.*` |
+| **Sin secretos reales en archivos versionados** | El repositorio es **público**: solo hay marcadores. Los valores reales viven en los secretos del Container App |
+
+➖ **Perfiles (`application-dev` / `application-prod`):** no se usan. La diferencia entre entornos se resuelve
+con **variables de entorno**, que es el enfoque de los 12 factores y evita duplicar archivos de configuración.
+
+---
+
+## 17. Pool de conexiones HikariCP ✅
+
+| Punto | Valor configurado |
+| :--- | :--- |
+| Pool para reutilizar conexiones JDBC | `pool-name: InterviewHikariPool` |
+| `maximum-pool-size` | 10 |
+| `minimum-idle` | 2 |
+| Timeouts y vida máxima | `connection-timeout: 20000` · `idle-timeout: 300000` · `max-lifetime: 1200000` |
+| Verificar que funcionen y se recuperen | `leak-detection-threshold: 30000` avisa en el log si una conexión no se devuelve. Verificado con `hikaricp.connections.max` = 10 |
+| **Impacto del número de réplicas** | Ver abajo |
+| Para qué sirve y dónde se configura | Ver abajo |
+
+> **El punto de las réplicas (pregunta típica):** el pool es **por instancia** de la aplicación, no global.
+> Con `maximum-pool-size = 10` y **1 réplica**, el máximo de conexiones a MySQL es 10. Si el Container App
+> escalara a **3 réplicas**, serían **30 conexiones simultáneas**. Por eso el tamaño del pool debe elegirse
+> pensando en el peor caso de escalado y en el límite de conexiones del servidor de base de datos. Acá el
+> máximo de réplicas está fijado en 1, así que el techo real es de 10 conexiones.
+
+> **Para qué sirve:** abrir una conexión a la base es costoso (handshake TCP, autenticación, negociación
+> TLS). El pool las mantiene abiertas y las **reutiliza**, en lugar de abrir y cerrar una por cada petición.
+
+---
+
+## 18. Health checks y métricas ✅
+
+| Punto | Dónde |
+| :--- | :--- |
+| Mecanismo para comprobar que funciona | `GET /actuator/health` |
+| Exponer el endpoint de forma controlada | Es público, pero **sin token muestra solo `{"status":"UP"}`**; el detalle requiere autenticación |
+| Comprobar conectividad con la base | `components.db.status = UP` (visible con token), verificado en local y en Azure |
+| Información de recursos, memoria y métricas | `GET /actuator/metrics` (98 métricas) y Azure Monitor |
+| **Por qué una aplicación iniciada no está lista** | Ver abajo |
+
+> **Iniciada ≠ lista:** Tomcat puede estar escuchando en el puerto mientras la aplicación **todavía no puede
+> atender peticiones**, porque sigue inicializando beans. Ese es exactamente el error que sufrimos: Azure
+> respondía **503 "App port is not ready"** y los logs mostraban que Spring moría al crear el
+> `EntityManagerFactory` por no poder conectarse a la base. Por eso existen **dos sondas distintas**:
+> *liveness* (¿el proceso está vivo?) y *readiness* (¿puede recibir tráfico?). El pipeline aplica el mismo
+> criterio: no se declara exitoso hasta que el health devuelve HTTP 200.
+
+---
+
+## 19. Dependencias y compilación ✅
+
+| Punto | Respuesta |
+| :--- | :--- |
+| Gestor elegido | **Gradle** con Kotlin DSL (`build.gradle.kts`) |
+| Dependencias compatibles | Spring Boot **3.5.16** gestiona las versiones por BOM (Web, Data JPA, Security, Actuator, Validation) + `jjwt 0.12.6` + `mysql-connector-j` |
+| Versión de Java | **21** con `toolchain` y `options.release = 21` (bytecode compatible con el runtime del contenedor) |
+| Generar el `.jar` ejecutable | `./gradlew bootJar` |
+| Ubicación del artefacto | **`build/libs/interview-back-0.0.1-SNAPSHOT.jar`** (en Maven sería `target/`) |
+| Qué ocurre al compilar y al ejecutar pruebas | `compileJava` → bytecode; `test` → levanta el contexto de Spring **contra una base real**, y `bootJar` empaqueta el JAR con Tomcat embebido |
+
+---
+
+## 20. Dockerfile y ejecución ✅ (7/7)
+
+| Punto | Cómo se cumple |
+| :--- | :--- |
+| Etapas de construcción y ejecución | Dos etapas: `builder` (JDK + Gradle) y `production` |
+| Compilar con JDK y gestor de build | `eclipse-temurin:21-jdk-jammy` + `./gradlew bootJar` |
+| Copiar solo el artefacto necesario | `COPY --from=builder /workspace/build/libs/....jar app.jar` |
+| Versión de Java que ejecute el bytecode | Runtime `java21-debian12` — coherente con el `release = 21` |
+| Imagen final mínima | **Distroless**: sin shell, sin `apt`, sin compilador |
+| Usuario no privilegiado | `USER nonroot:nonroot` |
+| Por qué multietapa y cómo se genera el JAR | Ver `docs/docker.md` |
+
+---
+
+## 21. Pruebas durante la construcción ✅
+
+| Punto | Respuesta |
+| :--- | :--- |
+| En qué etapa se ejecutan | En **CI**, paso *"Compilar y ejecutar los tests"*, con un **MySQL efímero** que GitHub levanta como *service container* |
+| Fallo de compilación vs de tests | La compilación falla por errores de sintaxis o tipos; los tests fallan por comportamiento. **Los dos detienen el pipeline**, pero en pasos distintos |
+| Por qué una prueba de integración puede fallar sin base de datos | **Lo vivimos**: `contextLoads` levanta el contexto completo, incluida la conexión a MySQL. Sin base, falla con `Communications link failure`. Pasó localmente y también en la primera ejecución del pipeline (que falló por otro motivo, el permiso de `gradlew`) |
+| Consecuencias de omitir pruebas | Se publica una imagen que nunca se verificó. **Nunca se hizo**: los tests corren siempre y si fallan, el pipeline se detiene **antes** de construir la imagen |
+| Mantener pruebas funcionales en lugar de eliminarlas | ✅ Los tests se **repararon, no se eliminaron**: cuando faltó la base en CI se agregó el service container; cuando faltó el permiso de ejecución de `gradlew`, se corrigió el modo en git |
+
+### Dos decisiones conscientes sobre las pruebas
+
+1. **`docker build` usa `-x test`**: los tests **no se saltean del proyecto**, se ejecutan en CI. Volver a
+   correrlos durante el empaquetado repetiría el mismo trabajo y exigiría una base de datos durante el build.
+   Se ejecutan **una vez, en el lugar correcto**.
+2. **El pipeline sí usa `./gradlew build`** (con tests). Si se hubieran desactivado para "que quede verde",
+   el pipeline no probaría nada — y eso es justamente lo que hay que evitar.
+
+---
+
+## RESUMEN DEL CRUCE
+
+| Ítem del checklist | Estado |
+| :--- | :---: |
+| 1. Clase principal | ✅ |
+| 2. Configuración y beans | ✅ |
+| 3. Servicios e inyección | ✅ |
+| 4. UserDetailsService | ✅ |
+| 5. Entidad User y seguridad de cuentas | ✅ (2 puntos no aplican, justificados) |
+| 6. Entidades, JPA e Hibernate | ✅ |
+| 7. Repositorios y transacciones | ✅ 🔧 (se agregó `@Transactional`) |
+| 8. Configuración de Spring Security | ✅ |
+| 9. CORS | ✅ 🔧 (se hizo configurable) |
+| 10. Servicio de JWT | ✅ 🔧 (se corrigió el algoritmo documentado) |
+| 11. Filtro JWT | ✅ |
+| 12. Controlador de autenticación | ✅ |
+| 16. Configuración centralizada | ✅ |
+| 17. HikariCP | ✅ |
+| 18. Health checks y métricas | ✅ |
+| 19. Dependencias y compilación | ✅ |
+| 20. Dockerfile y ejecución | ✅ |
+| 21. Pruebas durante la construcción | ✅ |
+
+**Lo que NO se agregó, a propósito:** Redis, MapStruct, refresh tokens, «Recordarme», `audience` en el JWT,
+roles diferenciados, migraciones Flyway y perfiles de Spring. Ninguno es necesario para este sistema y el
+material de la cátedra aclara que son herramientas que se usan **cuando la aplicación las necesita**.

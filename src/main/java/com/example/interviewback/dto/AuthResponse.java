@@ -12,7 +12,7 @@ package com.example.interviewback.dto;
  */
 public class AuthResponse {
 
-    /** JWT firmado con HS256. El front lo guarda en AsyncStorage. */
+    /** JWT firmado con HMAC-SHA. El cliente lo guarda para autenticar las demas peticiones. */
     private String token;
 
     /** ID del usuario en la base de datos */

@@ -91,7 +91,7 @@ src/main/java/com/example/interviewback/
 │   └── GlobalExceptionHandler.java   Manejo centralizado de errores
 │
 ├── security/                         Autenticación
-│   ├── JwtUtil.java                  Genera y valida tokens (HS256)
+│   ├── JwtUtil.java                  Genera y valida tokens (HMAC-SHA)
 │   └── JwtAuthFilter.java            Filtro que autentica cada petición
 │
 ├── controller/                       Capa de entrada HTTP
@@ -146,7 +146,7 @@ sequenceDiagram
     T->>J: pasa la petición por la cadena de filtros
     J->>J: extrae el token del header
     J->>U: isTokenValid(token)
-    U->>U: verifica firma HS256 y expiración (exp)
+    U->>U: verifica la firma HMAC y la expiración (exp)
     alt Token inválido
         U-->>J: false
         J->>Ctrl: continúa SIN autenticar

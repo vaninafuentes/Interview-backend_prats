@@ -3,35 +3,10 @@ package com.example.interviewback.dto;
 import java.util.List;
 
 /**
- * DTO de respuesta con el feedback generado por Groq AI.
+ * Resultado de la evaluación de una respuesta: puntuación global, puntuaciones
+ * por criterio, fortalezas, errores, recomendaciones y un resumen.
  *
- * Capa: DTO
- * ---------
- * Representa el JSON que el backend devuelve al frontend:
- *   POST /api/interview/evaluate → 200 OK
- *
- * {
- *   "score": 8,
- *   "criteria": {
- *     "technicalKnowledge": 9,
- *     "relevance": 8,
- *     "clarity": 8,
- *     "communication": 7,
- *     "structure": 8
- *   },
- *   "strengths": ["Explicó correctamente el concepto principal"],
- *   "mistakes": ["No explicó una diferencia importante"],
- *   "recommendations": ["Agregar un ejemplo práctico"],
- *   "feedback": "La respuesta demuestra un buen dominio del tema."
- * }
- *
- * Campos:
- *   - score:           puntuación global de 0 a 10
- *   - criteria:        puntuaciones individuales por criterio
- *   - strengths:       fortalezas concretas identificadas en la respuesta
- *   - mistakes:        errores o aspectos incorrectos/faltantes
- *   - recommendations: consejos accionables para mejorar
- *   - feedback:        resumen breve de la evaluación general
+ * <p>{@code score} se expresa de 0 a 10.
  */
 public class InterviewFeedbackResponse {
 

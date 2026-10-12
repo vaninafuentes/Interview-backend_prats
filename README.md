@@ -24,7 +24,7 @@ Trabajo práctico de **Ingeniería de Software Aplicada** — Universidad de Men
 | :--- | :--- | :--- |
 | Lenguaje | Java | 21 (LTS) |
 | Framework | Spring Boot | 3.5.16 |
-| Seguridad | Spring Security + JWT (HS256) | jjwt 0.12.6 |
+| Seguridad | Spring Security + JWT (HMAC-SHA, HS384 con la clave actual) | jjwt 0.12.6 |
 | Persistencia | Spring Data JPA + Hibernate | 6.6.53 |
 | Base de datos | MySQL | 8.0.46 (Azure) / 8.4 (local) |
 | Pool de conexiones | HikariCP | incluido en Spring Boot |

@@ -1,44 +1,39 @@
 package com.example.interviewback.config;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.servlet.config.annotation.CorsRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
- * Configuración global de CORS (Cross-Origin Resource Sharing).
+ * Política de CORS.
  *
- * Capa: CONFIG
- * ------------
- * Esta clase configura la política de CORS del backend.
+ * <p>Solo afecta a clientes web: las aplicaciones móviles nativas no envían
+ * cabecera {@code Origin} y por lo tanto el navegador no aplica esta política.
+ * Los orígenes se configuran con la variable de entorno
+ * {@code CORS_ALLOWED_ORIGINS} (lista separada por comas); el valor por defecto
+ * es permisivo para facilitar el desarrollo.
  *
- * ¿Por qué es necesaria?
- *   El frontend (Expo/React Native) corre en un origen diferente al backend
- *   (distinto puerto o IP). Sin CORS habilitado, el navegador/WebView bloquea
- *   las peticiones HTTP del front al back por seguridad (Same-Origin Policy).
- *
- * Configuración actual (desarrollo):
- *   - allowedOrigins("*"): permite cualquier origen
- *   - Métodos: GET, POST, PUT, DELETE, OPTIONS
- *   - Headers: cualquiera
- *
- * IMPORTANTE: En producción, cambiar allowedOrigins("*") por los dominios
- * específicos de tu aplicación para mayor seguridad.
+ * <p>Nota: permitir cualquier origen es aceptable en esta API porque no usa
+ * cookies de sesión —la autenticación viaja en la cabecera {@code Authorization},
+ * que un sitio ajeno no puede agregar—, así que el escenario que CORS previene
+ * (que otro sitio aproveche las credenciales del navegador) no existe. Al
+ * desplegar un cliente web conviene restringir la lista igualmente.
  */
 @Configuration
 public class CorsConfig implements WebMvcConfigurer {
 
+    private final String[] allowedOrigins;
+
+    public CorsConfig(@Value("${app.cors.allowed-origins:*}") String allowedOrigins) {
+        this.allowedOrigins = allowedOrigins.split(",");
+    }
+
     @Override
     public void addCorsMappings(CorsRegistry registry) {
-        registry
-                // Aplica CORS a todas las rutas de la API
-                .addMapping("/**")
-                // En desarrollo permitimos todos los orígenes.
-                // En producción, restringir a dominios específicos:
-                // .allowedOrigins("https://mi-app.com")
-                .allowedOrigins("*")
-                // Métodos HTTP permitidos
+        registry.addMapping("/**")
+                .allowedOrigins(allowedOrigins)
                 .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
-                // Permitir cualquier header (Content-Type, Authorization, etc.)
                 .allowedHeaders("*");
     }
 }

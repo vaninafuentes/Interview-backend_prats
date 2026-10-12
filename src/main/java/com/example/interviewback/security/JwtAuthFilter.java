@@ -18,21 +18,19 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Filtro JWT de Spring Security.
+ * Autentica cada petición a partir del token JWT.
  *
- * Se ejecuta UNA VEZ por request (OncePerRequestFilter).
- * Responsabilidad:
- *   1. Leer el header "Authorization: Bearer <token>"
- *   2. Validar el JWT con JwtUtil
- *   3. Si es válido, cargar el User de la DB y ponerlo en SecurityContextHolder
- *      → Spring Security marca el request como "autenticado"
- *   4. Continuar la cadena de filtros (filterChain.doFilter)
- *
- * Si no hay token o es inválido, el filtro no hace nada y el request
- * llega a SecurityConfig que decide si lo rechaza (401) o lo permite.
+ * <p>Lee la cabecera {@code Authorization: Bearer <token>}, la valida y registra
+ * al usuario en el contexto de seguridad. Si el token falta, es inválido o está
+ * vencido, <b>no rechaza la petición</b>: la deja pasar sin autenticar y es
+ * {@code SecurityConfig} quien decide según las reglas de acceso, de modo que la
+ * autorización queda definida en un solo lugar.
  */
 @Component
 public class JwtAuthFilter extends OncePerRequestFilter {
+
+    private static final String HEADER = "Authorization";
+    private static final String PREFIX = "Bearer ";
 
     private final JwtUtil jwtUtil;
     private final UserRepository userRepository;
@@ -49,50 +47,43 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             FilterChain filterChain
     ) throws ServletException, IOException {
 
-        final String authHeader = request.getHeader("Authorization");
-
-        // Si no hay header o no empieza con "Bearer ", skip
-        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
-            filterChain.doFilter(request, response);
-            return;
+        String token = extraerToken(request);
+        if (token != null) {
+            autenticar(token, request);
         }
-
-        // Extraer el token quitando "Bearer "
-        final String token = authHeader.substring(7);
-
-        // Validar token
-        if (!jwtUtil.isTokenValid(token)) {
-            filterChain.doFilter(request, response);
-            return;
-        }
-
-        // Extraer email del token y buscar el usuario en la DB
-        final String email = jwtUtil.extractEmail(token);
-        Optional<User> userOpt = userRepository.findByEmail(email);
-
-        if (userOpt.isEmpty()) {
-            filterChain.doFilter(request, response);
-            return;
-        }
-
-        // Crear objeto de autenticación y cargarlo en el SecurityContext.
-        //
-        // Se asigna ROLE_USER: la MISMA autoridad que otorga el
-        // UserDetailsService de SecurityConfig. Antes se pasaba una lista
-        // vacía, lo que hacía que un usuario autenticado por JWT tuviera
-        // menos permisos que el mismo usuario autenticado por login.
-        // Gracias a esta autoridad, una petición con token válido puede
-        // acceder al detalle del endpoint de salud de Actuator
-        // (configurado con management.endpoint.health.roles=USER).
-        UsernamePasswordAuthenticationToken authToken = new UsernamePasswordAuthenticationToken(
-                userOpt.get(),
-                null,
-                List.of(new SimpleGrantedAuthority("ROLE_USER"))
-        );
-        authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
-        SecurityContextHolder.getContext().setAuthentication(authToken);
-
-        // Continuar con el siguiente filtro
         filterChain.doFilter(request, response);
+    }
+
+    private String extraerToken(HttpServletRequest request) {
+        String header = request.getHeader(HEADER);
+        if (header == null || !header.startsWith(PREFIX)) {
+            return null;
+        }
+        return header.substring(PREFIX.length());
+    }
+
+    private void autenticar(String token, HttpServletRequest request) {
+        if (!jwtUtil.isTokenValid(token)) {
+            return;
+        }
+
+        // La firma ya se validó criptográficamente. Esta consulta sirve para
+        // obtener los datos del usuario y para que un cambio de permisos tenga
+        // efecto de inmediato, sin esperar a que el token expire.
+        Optional<User> encontrado = userRepository.findByEmail(jwtUtil.extractEmail(token));
+        if (encontrado.isEmpty()) {
+            return;
+        }
+
+        User user = encontrado.get();
+        AuthenticatedUser principal = new AuthenticatedUser(user.getId(), user.getName(), user.getEmail());
+
+        UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
+                principal,
+                null,
+                List.of(new SimpleGrantedAuthority(Roles.USER))
+        );
+        authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
     }
 }
