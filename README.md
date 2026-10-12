@@ -219,6 +219,8 @@ consultables con KQL).
 
 | Documento | Contenido |
 | :--- | :--- |
+| **[docs/conceptos.md](docs/conceptos.md)** | **📚 Explicación de TODOS los conceptos desde cero** (CI/CD, Azure, Docker, JWT…). Empezar por acá |
+| [docs/guia-parcial.md](docs/guia-parcial.md) | Las 50 preguntas de defensa + el cruce con el checklist de la cátedra + simulacro |
 | [docs/arquitectura.md](docs/arquitectura.md) | Componentes, flujo de una petición, modelo de datos, endpoints |
 | [docs/docker.md](docs/docker.md) | Dockerfile multietapa, imagen distroless, Docker Compose, comandos |
 | [docs/ci-cd.md](docs/ci-cd.md) | Pipeline, versionado, casos de despliegue, resolución de errores |
