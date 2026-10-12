@@ -13,14 +13,14 @@
 
 ## RESUMEN
 
-| Estado | Cantidad |
-| :--- | :---: |
-| ✅ COMPLETADO | 36 |
-| ⚠️ PARCIAL | 3 |
-| ⏭️ NO CORRESPONDE (fuera de alcance acordado) | 2 |
-| 🔲 NO IMPLEMENTADO | 0 |
-| ❓ PENDIENTE DE VERIFICACIÓN | 1 |
-| **TOTAL** | **42** |
+| Estado | Cantidad | Requisitos |
+| :--- | :---: | :--- |
+| ✅ COMPLETADO | 38 | Todos salvo los indicados abajo |
+| ⚠️ PARCIAL | 2 | 38 (colección de Postman) y 42 (documentación faltante) |
+| ⏭️ NO CORRESPONDE | 2 | 2 y 39 (integración con React Native, fuera de alcance) |
+| 🔲 NO IMPLEMENTADO | 0 | — |
+| ❓ PENDIENTE DE VERIFICACIÓN | 0 | — |
+| **TOTAL** | **42** | |
 
 ---
 
