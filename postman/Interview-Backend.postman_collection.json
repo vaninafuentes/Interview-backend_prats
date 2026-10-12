@@ -1,0 +1,508 @@
+{
+  "info": {
+    "name": "Interview AI Backend — Azure",
+    "description": "Colección de pruebas de la API del backend Interview AI desplegado en Azure Container Apps.\n\nCÓMO USARLA\n1. Importar este archivo en Postman (File → Import).\n2. Verificar la variable `baseUrl` (por defecto apunta a Azure; para local usar http://localhost:8080).\n3. Ejecutar la colección completa con el Collection Runner: los scripts guardan el token automáticamente.\n\nORDEN RECOMENDADO\nPrimero la carpeta 1 (obtiene el token), luego el resto. Si se ejecuta la colección completa en orden, funciona sin intervención manual.\n\nREQUISITO\nLa base de datos de Azure debe estar ENCENDIDA, si no la aplicación devuelve HTTP 503.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://interview-backend.happybay-cc24db11.brazilsouth.azurecontainerapps.io",
+      "type": "string"
+    },
+    {
+      "key": "token",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "email",
+      "value": "vanina.fuentes@um.edu.ar",
+      "type": "string"
+    },
+    {
+      "key": "password",
+      "value": "demo2026unm",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Salud del servicio (público)",
+      "item": [
+        {
+          "name": "Health — nivel superior (SIN token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Responde 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('El estado es UP', function () {",
+                  "    pm.expect(pm.response.json().status).to.eql('UP');",
+                  "});",
+                  "pm.test('NO expone detalles internos sin autenticacion', function () {",
+                  "    pm.expect(pm.response.json().components).to.be.undefined;",
+                  "    console.log('Correcto: sin token solo se ve el estado, no los componentes internos.');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/actuator/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["actuator", "health"]
+            },
+            "description": "Endpoint público que usan las sondas de Azure y el pipeline. Sin token devuelve solo el estado general."
+          }
+        },
+        {
+          "name": "Info — versión de build (público)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Responde 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Informa la version y la fecha de build', function () {",
+                  "    const b = pm.response.json().build;",
+                  "    pm.expect(b).to.be.an('object');",
+                  "    console.log('Artefacto:', b.artifact, '| Version:', b.version, '| Build:', b.time);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/actuator/info",
+              "host": ["{{baseUrl}}"],
+              "path": ["actuator", "info"]
+            },
+            "description": "Información de build publicada por Actuator. No contiene datos sensibles."
+          }
+        }
+      ]
+    },
+    {
+      "name": "1. Autenticación (obtiene el token)",
+      "item": [
+        {
+          "name": "Registro de usuario",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Responde 201 (o 400 si el usuario ya existe)', function () {",
+                  "    pm.expect(pm.response.code).to.be.oneOf([201, 400]);",
+                  "});",
+                  "const json = pm.response.json();",
+                  "if (json.token) {",
+                  "    pm.collectionVariables.set('token', json.token);",
+                  "    console.log('Token guardado desde el registro.');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Vanina Fuentes\",\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/register",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "register"]
+            },
+            "description": "Crea un usuario y devuelve un JWT. Si el usuario ya existe responde 400."
+          }
+        },
+        {
+          "name": "Login correcto (guarda el token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Responde 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Devuelve un token JWT', function () {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.token).to.be.a('string');",
+                  "    pm.expect(json.token.split('.')).to.have.lengthOf(3, 'Un JWT tiene 3 partes separadas por puntos');",
+                  "});",
+                  "const json = pm.response.json();",
+                  "pm.collectionVariables.set('token', json.token);",
+                  "console.log('Token guardado. Longitud:', json.token.length, 'caracteres');",
+                  "",
+                  "// Se decodifica el payload del JWT para mostrar su contenido (NO esta cifrado, solo firmado)",
+                  "const payload = JSON.parse(atob(json.token.split('.')[1]));",
+                  "console.log('Contenido del token:', JSON.stringify(payload));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "login"]
+            },
+            "description": "Autentica y devuelve un JWT. El script de test lo guarda en la variable 'token' y decodifica el payload para mostrarlo en la consola."
+          }
+        },
+        {
+          "name": "Login con contraseña incorrecta (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Responde 401 Unauthorized', function () { pm.response.to.have.status(401); });",
+                  "pm.test('El mensaje no revela si el usuario existe', function () {",
+                  "    const msg = JSON.stringify(pm.response.json()).toLowerCase();",
+                  "    pm.expect(msg).to.not.include('noexiste');",
+                  "    console.log('Correcto: no filtra si el email esta registrado o no.');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"contrasenaIncorrecta123\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "login"]
+            },
+            "description": "Caso negativo: la autenticación debe fallar."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Endpoints protegidos (con token)",
+      "item": [
+        {
+          "name": "Usuario autenticado — /api/auth/me",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Responde 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Devuelve los datos del usuario del token', function () {",
+                  "    const u = pm.response.json();",
+                  "    pm.expect(u.email).to.be.a('string');",
+                  "    console.log('Usuario autenticado:', u.name, '(' + u.email + ')');",
+                  "});",
+                  "pm.test('NO devuelve la contrasena', function () {",
+                  "    pm.expect(JSON.stringify(pm.response.json())).to.not.include('password');",
+                  "    pm.expect(JSON.stringify(pm.response.json())).to.not.include('$2a$');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/me",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "me"]
+            },
+            "description": "Devuelve el usuario extraído del JWT. Verifica además que nunca se exponga el hash de la contraseña."
+          }
+        },
+        {
+          "name": "Health con detalle (con token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Responde 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('CON token SI muestra el detalle de los componentes', function () {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json.components).to.be.an('object');",
+                  "});",
+                  "pm.test('La base de datos esta conectada', function () {",
+                  "    const db = pm.response.json().components.db;",
+                  "    pm.expect(db.status).to.eql('UP');",
+                  "    console.log('Base de datos:', db.details.database, '— estado:', db.status);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/actuator/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["actuator", "health"]
+            },
+            "description": "El mismo endpoint, ahora con autenticación: revela los componentes internos, incluida la conexión a MySQL."
+          }
+        },
+        {
+          "name": "Listado de preguntas",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Responde 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Devuelve un arreglo de preguntas', function () {",
+                  "    pm.expect(pm.response.json()).to.be.an('array');",
+                  "    console.log('Preguntas devueltas:', pm.response.json().length);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/questions",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "questions"]
+            },
+            "description": "Endpoint de negocio. Demuestra que la conexión a la base de datos funciona de punta a punta."
+          }
+        },
+        {
+          "name": "Métricas de la aplicación (con token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Responde 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Expone metricas de la aplicacion', function () {",
+                  "    const names = pm.response.json().names;",
+                  "    pm.expect(names).to.be.an('array');",
+                  "    console.log('Metricas disponibles:', names.length);",
+                  "});",
+                  "pm.test('Incluye las metricas del pool de conexiones HikariCP', function () {",
+                  "    const names = pm.response.json().names;",
+                  "    pm.expect(names).to.include('hikaricp.connections.max');",
+                  "});",
+                  "pm.test('Incluye los tiempos de respuesta HTTP', function () {",
+                  "    const names = pm.response.json().names;",
+                  "    pm.expect(names).to.include('http.server.requests');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/actuator/metrics",
+              "host": ["{{baseUrl}}"],
+              "path": ["actuator", "metrics"]
+            },
+            "description": "Lista las 98 métricas disponibles (pool de conexiones, JVM, HTTP, GC)."
+          }
+        },
+        {
+          "name": "Tiempo de respuesta por endpoint",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Responde 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Informa cantidad, tiempo total y la mas lenta', function () {",
+                  "    const m = pm.response.json().measurements;",
+                  "    const count = m.find(x => x.statistic === 'COUNT');",
+                  "    const total = m.find(x => x.statistic === 'TOTAL_TIME');",
+                  "    const max = m.find(x => x.statistic === 'MAX');",
+                  "    pm.expect(count.value).to.be.above(0);",
+                  "    console.log('Peticiones:', count.value, '| Tiempo total:', total.value.toFixed(4), 's | Mas lenta:', max.value.toFixed(4), 's');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/actuator/metrics/http.server.requests?tag=uri:/api/questions",
+              "host": ["{{baseUrl}}"],
+              "path": ["actuator", "metrics", "http.server.requests"],
+              "query": [
+                {
+                  "key": "tag",
+                  "value": "uri:/api/questions"
+                }
+              ]
+            },
+            "description": "Cómo se mide cuánto tarda una petición."
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Casos negativos de seguridad (deben fallar)",
+      "item": [
+        {
+          "name": "Endpoint protegido SIN token (403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Responde 403 Forbidden', function () { pm.response.to.have.status(403); });",
+                  "console.log('Correcto: sin token no se accede al recurso protegido.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/me",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "me"]
+            },
+            "description": "Sin cabecera Authorization, el recurso debe quedar inaccesible."
+          }
+        },
+        {
+          "name": "Token adulterado (403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Responde 403', function () { pm.response.to.have.status(403); });",
+                  "console.log('Correcto: modificar un solo caracter invalida la firma criptografica del token.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}X"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/auth/me",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "auth", "me"]
+            },
+            "description": "Se le agrega un carácter al final del token. La firma HMAC-SHA256 deja de coincidir y la petición se rechaza."
+          }
+        },
+        {
+          "name": "Métricas SIN token (403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Responde 403 Forbidden', function () { pm.response.to.have.status(403); });",
+                  "console.log('Correcto: las metricas internas no son publicas.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/actuator/metrics",
+              "host": ["{{baseUrl}}"],
+              "path": ["actuator", "metrics"]
+            },
+            "description": "Las métricas quedan protegidas: un anónimo no puede ver el estado interno de la aplicación."
+          }
+        }
+      ]
+    }
+  ]
+}

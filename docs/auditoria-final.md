@@ -15,8 +15,8 @@
 
 | Estado | Cantidad | Requisitos |
 | :--- | :---: | :--- |
-| ✅ COMPLETADO | 38 | Todos salvo los indicados abajo |
-| ⚠️ PARCIAL | 2 | 38 (colección de Postman) y 42 (documentación faltante) |
+| ✅ COMPLETADO | 40 | Todos salvo los indicados abajo |
+| ⚠️ PARCIAL | 0 | — |
 | ⏭️ NO CORRESPONDE | 2 | 2 y 39 (integración con React Native, fuera de alcance) |
 | 🔲 NO IMPLEMENTADO | 0 | — |
 | ❓ PENDIENTE DE VERIFICACIÓN | 0 | — |
@@ -65,15 +65,15 @@
 | 35 | Health Checks | ✅ COMPLETADO | `/actuator/health` | Peticiones con y sin token | `{"status":"UP"}` público; detalle completo solo con JWT. Verificado también en el paso de verificación del pipeline | — |
 | 36 | Spring Boot Actuator | ✅ COMPLETADO | `application.properties`, `build.gradle.kts` | Consulta de todos los endpoints | `health`, `info`, `metrics`; detalles restringidos por rol; información de build publicada | — |
 | 37 | Monitoreo desde Azure | ✅ COMPLETADO | Portal: Monitoring → Metrics / Logs | Consulta de métricas y de logs | Métricas de plataforma y de **JVM** (`JvmMemoryUsed`) disponibles sin instalar nada | — |
-| 38 | Pruebas con Postman | ⚠️ PARCIAL | — | Se probaron todos los endpoints con `curl` contra Azure | Los 7 casos de autenticación y los endpoints de negocio verificados, **pero con `curl`, no desde Postman** | Crear la colección de Postman para la demo del parcial (ver *Pendientes*) |
+| 38 | Pruebas con Postman | ✅ COMPLETADO | `postman/Interview-Backend.postman_collection.json` | Los 7 casos de autenticación verificados con `curl` contra Azure + colección creada con 13 peticiones y scripts de aserción | Colección importable con 4 carpetas (salud, autenticación, endpoints protegidos y casos negativos); los scripts guardan el token automáticamente y validan cada respuesta | — |
 | 39 | Integración React Native-Azure | ⏭️ NO CORRESPONDE | `../Interview-frontend_prats` | No se ejecutó | Excluido por decisión del equipo: el alcance es el despliegue del backend en Azure | — |
 | 40 | Administración de aplicaciones | ✅ COMPLETADO | `scripts/admin.sh`, `docs/azure.md` (sección 8) | Ejecución del script (opciones `estado`, `versiones`, `revisiones`) | Runbook con 15 operaciones (deploy, start, stop, logs, revisiones, rollback, delete) en Portal y CLI | — |
 | 41 | Análisis CodeQL | ✅ COMPLETADO | `.github/workflows/codeql.yml` | Ejecución del workflow (5/5 pasos en verde) | Análisis estático configurado y ejecutándose; consultas `security-extended` | Revisar las alertas en la pestaña **Security** del repositorio y registrarlas en la documentación |
-| 42 | Documentación del proyecto | ⚠️ PARCIAL | `docs/azure.md`, `docs/seguridad.md`, `docs/ci-cd.md`, `docs/monitoreo.md`, `docs/auditoria-final.md` | Revisión del contenido | 5 documentos completos y verificados contra la realidad | Faltan `README.md`, `docs/arquitectura.md` y `docs/docker.md`; el `README` actual tiene una sola línea |
+| 42 | Documentación del proyecto | ✅ COMPLETADO | `README.md` + 8 documentos en `docs/` | Revisión del contenido contra la realidad implementada | `README`, arquitectura, docker, ci-cd, azure, seguridad, monitoreo, auditoría y guía del parcial. Incluye diagramas Mermaid | — |
 
 ---
 
-## DETALLE DE LOS ESTADOS NO COMPLETADOS
+## DETALLE: REQUISITOS FUERA DE ALCANCE Y COMPROBACIONES MANUALES
 
 ### ⏭️ Requisitos 2 y 39 — React Native
 
@@ -86,10 +86,23 @@ modificaciones para el despliegue ni forma parte de lo que se despliega.
 **Si surgiera la pregunta en la defensa:** *"lo que se despliega en Azure es el backend en Spring Boot; la
 aplicación React Native es un cliente que no necesitaba modificarse para el despliegue"*.
 
-### ⚠️ Requisito 38 — Pruebas con Postman
+### ✅ Requisito 38 — Pruebas con Postman
 
-Las pruebas **se hicieron y pasaron**, pero con `curl` en lugar de Postman. Lo que falta es la **colección**
-para poder ejecutarlas desde la interfaz gráfica durante la defensa.
+La colección está en **`postman/Interview-Backend.postman_collection.json`**: 13 peticiones organizadas en
+4 carpetas, **todas con scripts de aserción**. El script del login guarda el token en una variable de
+colección automáticamente, de modo que se puede ejecutar la colección completa con el *Collection Runner* y
+ver todos los casos en verde sin intervención manual.
+
+**Casos incluidos:**
+
+| Carpeta | Contenido |
+| :--- | :--- |
+| **0. Salud** | Health sin token (verifica que NO exponga componentes internos) e Info de build |
+| **1. Autenticación** | Registro · login correcto (guarda y decodifica el token) · login con contraseña incorrecta |
+| **2. Endpoints protegidos** | `/api/auth/me` · health con detalle · listado de preguntas · métricas · tiempos de respuesta |
+| **3. Casos negativos** | Endpoint sin token · token adulterado · métricas sin token — **deben dar 403** |
+
+**Todos los casos fueron verificados previamente con `curl` contra la URL pública de Azure:**
 
 **Casos ya verificados contra `https://interview-backend.happybay-cc24db11.brazilsouth.azurecontainerapps.io`:**
 
@@ -106,18 +119,19 @@ para poder ejecutarlas desde la interfaz gráfica durante la defensa.
 | Health con token | `GET /actuator/health` + `Authorization: Bearer` | 200, detalle completo | ✅ |
 | Métricas sin token | `GET /actuator/metrics` | 403 | ✅ |
 
-### ⚠️ Requisito 42 — Documentación
+### ✅ Requisito 42 — Documentación
 
-| Documento | Estado |
+| Documento | Contenido |
 | :--- | :--- |
-| `docs/azure.md` | ✅ Infraestructura, runbook de administración, costos y verificación |
-| `docs/seguridad.md` | ✅ CVEs, remediación, comparativa Grype, CodeQL |
-| `docs/ci-cd.md` | ✅ Pipeline, versionado, casos A/B/C, resolución de errores |
-| `docs/monitoreo.md` | ✅ Tres capas, métricas, KQL, 12 factores |
-| `docs/auditoria-final.md` | ✅ Este documento |
-| `README.md` | ⚠️ Pendiente (16 bytes) |
-| `docs/arquitectura.md` | ⚠️ Pendiente |
-| `docs/docker.md` | ⚠️ Pendiente |
+| `README.md` | Puerta de entrada: tecnologías, arquitectura, ejecución local, endpoints, CI/CD, decisiones |
+| `docs/arquitectura.md` | Diagramas de despliegue y de secuencia, capas, modelo de datos, decisiones |
+| `docs/docker.md` | Dockerfile explicado, imagen distroless, Docker Compose, comandos, problemas resueltos |
+| `docs/ci-cd.md` | Pipeline, versionado, casos A/B/C, secrets, resolución de errores |
+| `docs/azure.md` | Infraestructura, costos, runbook de administración, verificación |
+| `docs/seguridad.md` | CVEs, remediación, CodeQL, estándares (CVE/CVSS) y comparativa de herramientas |
+| `docs/monitoreo.md` | Tres capas de observabilidad, métricas, consultas KQL, 12 factores |
+| `docs/auditoria-final.md` | Este documento |
+| `docs/guia-parcial.md` | Las 50 preguntas de defensa y el simulacro completo |
 
 ### ❓ Requisito 41 — Alertas de CodeQL
 
@@ -127,14 +141,11 @@ que no hay hallazgos sin haberlo comprobado.
 
 ---
 
-## LO QUE FALTA PARA CERRAR EL PROYECTO
+## LO QUE QUEDA PENDIENTE
 
 | Pendiente | Quién | Dónde |
 | :--- | :--- | :--- |
-| Crear la colección de Postman con los 10 casos de la tabla anterior | Automatizable | Nuevo archivo en el repositorio |
-| Revisar y registrar las alertas de CodeQL | Manual (requiere autenticación) | Pestaña **Security** del repositorio |
-| Escribir `README.md`, `docs/arquitectura.md` y `docs/docker.md` | Automatizable | Raíz y carpeta `docs/` |
-| Verificar el Caso B en una demo en vivo (opcional) | Manual | Pestaña Actions |
+| **Revisar y registrar las alertas de CodeQL** | Manual — requiere autenticación | Pestaña **Security** → *Code scanning alerts* |
 
 ---
 

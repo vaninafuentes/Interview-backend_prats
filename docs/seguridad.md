@@ -276,3 +276,103 @@ En repositorios **públicos** el análisis de código es **gratuito**.
 | **Análisis de dependencias** (CVE/CVSS) | **Grype** | Bibliotecas de terceros e imagen base | `ci.yml`, en cada push |
 | **Análisis estático de código** (SAST) | **CodeQL** | Código propio | `codeql.yml`, en cada push y semanalmente |
 | **Análisis de la imagen** | **Grype** (sobre la imagen construida) | El contenedor completo tal como se despliega | `ci.yml`, antes de publicar |
+
+---
+
+## 8. ESTÁNDARES Y HERRAMIENTAS DE SEGURIDAD
+
+> **Aclaración importante:** CVE y CVSS **no son herramientas**, son **estándares**. Es un error frecuente
+> mezclarlos con los escáneres. Los escáneres *detectan*; CVE *nombra* lo detectado y CVSS *mide* su gravedad.
+
+### 8.1 Los estándares (conceptos, no programas)
+
+| Estándar | Qué es | Quién lo administra | Para qué sirve |
+| :--- | :--- | :--- | :--- |
+| **CVE**<br/>*Common Vulnerabilities and Exposures* | Un **identificador único** con formato `CVE-AAAA-NNNNN` asignado a cada vulnerabilidad divulgada públicamente | MITRE y las CNA | Que todos hablen de **la misma falla** con el mismo nombre. Sin esto, un reporte de Grype, uno de Trivy y uno de Snyk serían incomparables |
+| **CVSS**<br/>*Common Vulnerability Scoring System* | La **puntuación de 0.0 a 10.0** que mide la gravedad técnica, calculada con métricas (vector de ataque, complejidad, privilegios, impacto en confidencialidad/integridad/disponibilidad) | FIRST | **Priorizar**: no se puede corregir todo a la vez, entonces se empieza por lo crítico |
+| **GHSA**<br/>*GitHub Security Advisory* | Identificador de avisos de seguridad de GitHub | GitHub | Es el formato que usa Grype para las dependencias Java (los `GHSA-...` del informe) |
+| **SBOM**<br/>*Software Bill of Materials* | Inventario de todos los componentes de un software | — | Saber **qué hay adentro** para poder responder rápido ante una vulnerabilidad nueva ("¿usamos Log4j?") |
+
+**La analogía útil:** un CVE es el **número de expediente** de un delito; el CVSS es la **gravedad del delito**;
+y Grype/Trivy/Snyk son los **peritos** que investigan y te traen el expediente.
+
+### 8.2 Las herramientas de análisis (programas)
+
+| Herramienta | Tipo | Qué analiza | Costo | ¿La usamos? |
+| :--- | :--- | :--- | :--- | :---: |
+| **Grype** (Anchore) | SCA + escaneo de imágenes | Dependencias e imagen Docker contra bases de CVE | Open source | ✅ **Sí** |
+| **Syft** (Anchore) | Generador de SBOM | Inventario de componentes (alimenta a Grype) | Open source | Indirecto |
+| **Trivy** (Aqua) | SCA + IaC + secretos | Imágenes, **Dockerfile**, Terraform, Kubernetes y **secretos filtrados** | Open source | ❌ No (evaluada) |
+| **Snyk** | Plataforma comercial | Dependencias (SCA), código (SAST), contenedores, IaC | Plan gratuito limitado, luego pago | ❌ No (evaluada) |
+| **Dependabot** | Bot de GitHub | Abre Pull Requests automáticos al detectar dependencias desactualizadas o vulnerables | Gratis en GitHub | ❌ No (evaluado) |
+| **CodeQL** | SAST | **Código fuente propio** | Gratis en repos públicos | ✅ **Sí** |
+| **OWASP Dependency-Check** | SCA | Dependencias contra la base del NVD | Open source | ❌ No |
+
+### 8.3 Cómo se relacionan
+
+```
+                    ┌─────────────────────────────────────┐
+   APLICACIÓN ────► │  SBOM (Syft)                        │
+                    │  inventario de componentes          │
+                    └──────────────┬──────────────────────┘
+                                   │
+                                   ▼
+                    ┌─────────────────────────────────────┐
+                    │  ESCÁNERES (Grype / Trivy / Snyk)   │
+                    │  comparan contra bases de datos      │
+                    └──────────────┬──────────────────────┘
+                                   │
+                                   ▼
+                    ┌─────────────────────────────────────┐
+                    │  ESTÁNDARES                          │
+                    │  CVE → cómo se llama                 │
+                    │  CVSS → cuán grave es                │
+                    └─────────────────────────────────────┘
+                                   │
+                                   ▼
+                    ┌─────────────────────────────────────┐
+                    │  DECISIÓN: actualizar / mitigar /    │
+                    │  aceptar el riesgo (documentado)     │
+                    └─────────────────────────────────────┘
+```
+
+### 8.4 Por qué elegimos Grype + CodeQL y no Snyk ni Dependabot
+
+| Alternativa | Por qué no |
+| :--- | :--- |
+| **Snyk** | Es una plataforma comercial: exige cuenta, token en el pipeline y tiene límites de escaneo en el plan gratuito. **Grype cubre la misma necesidad de análisis de dependencias sin cuenta ni límites**, y además escanea la imagen completa (no solo las dependencias). |
+| **Dependabot** | Resuelve otro problema: **mantener actualizadas** las dependencias abriendo Pull Requests. Es complementario, no un reemplazo del escaneo. No se incorporó porque en este trabajo las actualizaciones se hicieron de forma **deliberada y verificada** (subir Spring Boot y re-escanear con Grype), y automatizarlas habría agregado ruido sin aportar a los objetivos del trabajo. Queda como mejora futura. |
+| **Trivy** | Se evaluó: aporta análisis de IaC y detección de secretos, que Grype no tiene. No se incorporó para **no duplicar herramientas** con funciones superpuestas; esas dos capacidades quedaron cubiertas de otra forma (revisión manual del Dockerfile y `.dockerignore` + secretos gestionados en Container Apps). |
+| **OWASP Dependency-Check** | Más lento y con más falsos positivos que Grype; requiere descargar la base del NVD, que demora mucho en el pipeline. |
+
+**Criterio aplicado:** una herramienta por necesidad, sin solapamientos y sin dependencias externas
+innecesarias. Las tres necesidades están cubiertas:
+
+| Necesidad | Cubierta por |
+| :--- | :--- |
+| Vulnerabilidades en dependencias y en la imagen | **Grype** |
+| Patrones inseguros en el código propio | **CodeQL** |
+| Nomenclatura y priorización | **CVE** y **CVSS** |
+
+### 8.5 Cómo se lee un informe de Grype
+
+```bash
+grype interview-backend:v1.1.0 -o table
+```
+
+```
+NAME                 INSTALLED   FIXED-IN   TYPE          VULNERABILITY        SEVERITY
+tomcat-embed-core    10.1.43     10.1.55    java-archive  GHSA-r29c-68gh-xp6x  Critical
+spring-webmvc        6.2.19      -          java-archive  GHSA-pc63-qcmh-9cmg  Critical
+libc6                2.36-...    -          deb           CVE-2026-5450        Critical
+```
+
+| Columna | Significado |
+| :--- | :--- |
+| `NAME` / `INSTALLED` | Qué paquete y qué versión tenés |
+| `FIXED-IN` | **La versión que corrige el problema.** Si dice `-` (o "sin fix"), no existe corrección publicada todavía |
+| `VULNERABILITY` | El identificador: `CVE-...` (NVD) o `GHSA-...` (GitHub) |
+| `SEVERITY` | La gravedad según CVSS |
+
+**La columna `FIXED-IN` es la que manda la decisión:** si hay versión de corrección, se actualiza; si no la
+hay, se documenta y se mitiga.
