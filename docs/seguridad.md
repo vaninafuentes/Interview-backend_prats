@@ -376,3 +376,111 @@ libc6                2.36-...    -          deb           CVE-2026-5450        C
 
 **La columna `FIXED-IN` es la que manda la decisión:** si hay versión de corrección, se actualiza; si no la
 hay, se documenta y se mitiga.
+
+---
+
+## 9. RESULTADOS DE CODEQL — HALLAZGOS Y TRATAMIENTO
+
+**Primer análisis:** 11/10/2026 · `security-extended` · **4 alertas** (1 alta, 3 medias)
+
+> Este es el valor real del análisis estático: **Grype no habría encontrado ninguna de estas cuatro**, porque
+> no son vulnerabilidades de bibliotecas sino patrones en el código que escribimos nosotros.
+
+### 9.1 Alerta 1 — "Protección CSRF de Spring desactivada" (severidad ALTA)
+
+**Ubicación:** `SecurityConfig.java:84` → `.csrf(AbstractHttpConfigurer::disable)`
+
+**Veredicto: NO es una vulnerabilidad en este proyecto. Se descarta con justificación.**
+
+**Por qué CodeQL la marca:** ve que se desactiva una protección de seguridad estándar y lo señala. El patrón
+es real: la línea efectivamente desactiva CSRF.
+
+**Por qué no aplica acá:** un ataque CSRF funciona porque **el navegador envía automáticamente las
+credenciales** (cookies de sesión) en peticiones originadas desde otro sitio. La víctima visita una página
+maliciosa y su navegador hace la petición al banco con la cookie puesta, sin que ella lo sepa.
+
+Nuestra API no tiene ese vector:
+
+| Condición para que exista CSRF | En este proyecto |
+| :--- | :--- |
+| El navegador envía credenciales **automáticamente** | ❌ No: el token viaja en la cabecera `Authorization: Bearer`, que **ningún navegador agrega solo**. Un sitio malicioso no puede forzarla |
+| Hay **sesión con cookie** | ❌ No: `SessionCreationPolicy.STATELESS`, sin cookies de sesión |
+| El cliente es un **formulario web** | ❌ No: es una API consumida por una app móvil y por Postman |
+
+Desactivar CSRF en una API **sin estado, autenticada por token en cabecera** es la práctica **recomendada
+por la propia documentación de Spring Security**.
+
+**Lección sobre los analizadores estáticos:** CodeQL analiza el código, no la arquitectura completa. Ve la
+línea `csrf().disable()` sin saber que no hay cookies ni sesiones. Esto **no invalida la herramienta** —
+encontró 3 problemas reales que corregimos — pero muestra que **sus hallazgos requieren interpretación
+humana**, no aceptación automática. Ese criterio es parte del trabajo de seguridad.
+
+**Acción:** descartar la alerta en GitHub con el motivo *"Won't fix"* y un comentario explicando el análisis.
+
+---
+
+### 9.2 Alertas 2, 3 y 4 — "Inyección de registros" (severidad MEDIA)
+
+**Ubicación:** `GroqService.java:90`, `:231` y `:380`
+**Veredicto: SÍ son reales. Corregidas.**
+
+**Qué es (CWE-117, *Improper Output Neutralization for Logs*):** si un valor controlado por el usuario
+contiene saltos de línea y se escribe en el log sin neutralizar, se pueden **falsificar entradas del
+registro**.
+
+**El ataque, concreto:** el campo `topic` llega desde la petición HTTP. Si un atacante envía:
+
+```
+java\n2026-01-01 ERROR Falla crítica en la base de datos
+```
+
+en el archivo de logs aparecerían **dos líneas**: una real y otra que parece escrita por el sistema. Las
+consecuencias son: dificultar el análisis forense, engañar a las alertas automáticas que buscan la palabra
+`ERROR` y contaminar la evidencia. **No permite ejecutar código ni acceder a datos**: por eso la severidad
+es media y no crítica.
+
+**Corrección aplicada:** se agregó un método que neutraliza los caracteres de control antes de registrar:
+
+```java
+private static String sanitizarParaLog(String valor) {
+    if (valor == null) {
+        return "null";
+    }
+    // \p{Cntrl} coincide con todos los caracteres de control (incluye \n, \r, \t)
+    return valor.replaceAll("\\p{Cntrl}", "_");
+}
+```
+
+Y se aplicó a **6 sentencias de log**: las 3 marcadas por CodeQL (`topic`, `difficulty`, `category` —datos del
+usuario— y el cuerpo de la respuesta de la API de IA) más otras 3 que registran cuerpos de respuesta HTTP
+externa (`GroqService.java:147`, `:204` y `:320`), que presentan el mismo riesgo.
+
+**Verificación del arreglo** (ejecutada, no supuesta):
+
+| Entrada | Salida registrada | ¿Queda algún carácter de control? |
+| :--- | :--- | :---: |
+| `java` | `java` | no |
+| `java\n2026-01-01 ERROR Falla grave` | `java_2026-01-01 ERROR Falla grave` | **no** |
+| `tema\r\nERROR inyectado` | `tema__ERROR inyectado` | **no** |
+| `tema\tcon\ttabulaciones` | `tema_con_tabulaciones` | **no** |
+| `tema\0con byte nulo` | `tema_con byte nulo` | **no** |
+| `null` | `null` | no |
+
+El salto de línea se convierte en `_`, así que **la línea falsificada ya no puede existir**.
+
+### 9.3 Cómo se cierran las alertas
+
+| Alerta | Acción | Efecto |
+| :--- | :--- | :--- |
+| CSRF desactivado | **Descartar** en GitHub (*Won't fix* + justificación) | Queda registrada la decisión y el motivo |
+| Inyección de registros ×3 | **Corregir el código** (hecho) | Se **cierran solas** en el siguiente análisis |
+
+**Portal:** pestaña **Security** → *Code scanning alerts* → clic en la alerta → botón **Dismiss alert** →
+elegir el motivo → escribir el comentario → confirmar.
+
+### 9.4 Resumen del tratamiento
+
+| Análisis | Hallazgos | Reales | Falsos positivos | Corregidos |
+| :--- | :---: | :---: | :---: | :---: |
+| **Grype** (dependencias e imagen) | 186 → 115 | 73 resueltas | — | ✅ |
+| **CodeQL** (código propio) | 4 | 3 | 1 (CSRF, justificado) | ✅ |

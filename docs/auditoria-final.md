@@ -68,7 +68,7 @@
 | 38 | Pruebas con Postman | ✅ COMPLETADO | `postman/Interview-Backend.postman_collection.json` | Los 7 casos de autenticación verificados con `curl` contra Azure + colección creada con 13 peticiones y scripts de aserción | Colección importable con 4 carpetas (salud, autenticación, endpoints protegidos y casos negativos); los scripts guardan el token automáticamente y validan cada respuesta | — |
 | 39 | Integración React Native-Azure | ⏭️ NO CORRESPONDE | `../Interview-frontend_prats` | No se ejecutó | Excluido por decisión del equipo: el alcance es el despliegue del backend en Azure | — |
 | 40 | Administración de aplicaciones | ✅ COMPLETADO | `scripts/admin.sh`, `docs/azure.md` (sección 8) | Ejecución del script (opciones `estado`, `versiones`, `revisiones`) | Runbook con 15 operaciones (deploy, start, stop, logs, revisiones, rollback, delete) en Portal y CLI | — |
-| 41 | Análisis CodeQL | ✅ COMPLETADO | `.github/workflows/codeql.yml` | Ejecución del workflow (5/5 pasos en verde) | Análisis estático configurado y ejecutándose; consultas `security-extended` | Revisar las alertas en la pestaña **Security** del repositorio y registrarlas en la documentación |
+| 41 | Análisis CodeQL | ✅ COMPLETADO | `.github/workflows/codeql.yml`, `GroqService.java` | Workflow ejecutado (5/5 pasos) + revisión de las **4 alertas** en la pestaña Security | **3 alertas de inyección de registros corregidas** y verificadas; 1 alerta de CSRF analizada como no aplicable y documentada con su justificación | Descartar formalmente la alerta de CSRF en la interfaz de GitHub (queda registrada la decisión) |
 | 42 | Documentación del proyecto | ✅ COMPLETADO | `README.md` + 8 documentos en `docs/` | Revisión del contenido contra la realidad implementada | `README`, arquitectura, docker, ci-cd, azure, seguridad, monitoreo, auditoría y guía del parcial. Incluye diagramas Mermaid | — |
 
 ---
@@ -145,7 +145,10 @@ que no hay hallazgos sin haberlo comprobado.
 
 | Pendiente | Quién | Dónde |
 | :--- | :--- | :--- |
-| **Revisar y registrar las alertas de CodeQL** | Manual — requiere autenticación | Pestaña **Security** → *Code scanning alerts* |
+| **Descartar formalmente la alerta de CSRF** con la justificación documentada | Manual — requiere autenticación | Pestaña **Security** → la alerta → *Dismiss alert* → motivo *Won't fix* |
+
+Las 3 alertas de inyección de registros **se cierran solas** en el siguiente análisis de CodeQL, una vez que
+el código corregido llegue a la rama `main`.
 
 ---
 

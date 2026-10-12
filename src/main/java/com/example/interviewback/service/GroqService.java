@@ -74,6 +74,33 @@ public class GroqService {
     }
 
     /**
+     * Neutraliza un valor antes de escribirlo en el log.
+     *
+     * <p>Motivo (alerta "Inyección de registros" de CodeQL, CWE-117):
+     * si un valor controlado por el usuario contiene saltos de línea, al escribirlo
+     * en el log se pueden <b>falsificar entradas del registro</b>. Por ejemplo, si el
+     * campo {@code topic} llega con el valor
+     * {@code "java\n2026-01-01 ERROR Falla grave detectada"}, en el archivo de logs
+     * aparecería una línea que parece escrita por el sistema y no por el usuario.
+     *
+     * <p>Consecuencia real: dificulta el análisis forense y puede engañar a las alertas
+     * automáticas basadas en logs. No permite ejecutar código ni acceder a datos.
+     *
+     * <p>La solución es reemplazar todos los caracteres de control (saltos de línea,
+     * retornos de carro, tabulaciones) por un guion bajo antes de registrarlos.
+     *
+     * @param valor valor potencialmente controlado por el usuario o por un servicio externo
+     * @return el valor sin caracteres de control
+     */
+    private static String sanitizarParaLog(String valor) {
+        if (valor == null) {
+            return "null";
+        }
+        // \p{Cntrl} coincide con todos los caracteres de control (incluye \n, \r, \t)
+        return valor.replaceAll("\\p{Cntrl}", "_");
+    }
+
+    /**
      * Genera preguntas de entrevista sobre un tema usando Groq AI.
      *
      * @param topic      tema de la entrevista (ej: "React Native", "Java")
@@ -87,7 +114,10 @@ public class GroqService {
             return buildFallbackQuestions(topic, difficulty, count);
         }
 
-        log.info("[GroqService] Generando {} preguntas | tema={} | dificultad={}", count, topic, difficulty);
+        // Se sanitizan los valores controlados por el usuario antes de registrarlos
+        // (alerta "Inyección de registros" de CodeQL, CWE-117).
+        log.info("[GroqService] Generando {} preguntas | tema={} | dificultad={}",
+                count, sanitizarParaLog(topic), sanitizarParaLog(difficulty));
 
         String prompt = buildGenerationPrompt(topic, difficulty, count);
 
@@ -115,7 +145,7 @@ public class GroqService {
         } catch (HttpStatusCodeException e) {
             int statusCode = e.getStatusCode().value();
             log.error("[GroqService] Error HTTP {} al generar preguntas | body={}",
-                    statusCode, e.getResponseBodyAsString());
+                    statusCode, sanitizarParaLog(e.getResponseBodyAsString()));
             if (statusCode == 429) {
                 // Esperar y reintentar una vez
                 log.warn("[GroqService] 429 al generar. Reintentando en {}s...", RETRY_WAIT_SECONDS);
@@ -172,7 +202,7 @@ public class GroqService {
             JsonNode questionsNode = parsed.path("questions");
             if (questionsNode.isMissingNode() || !questionsNode.isArray()) {
                 log.error("[GroqService] Respuesta de generación sin campo 'questions'. Body: {}",
-                        content.substring(0, Math.min(200, content.length())));
+                        sanitizarParaLog(content.substring(0, Math.min(200, content.length()))));
                 throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
                         "Respuesta inesperada del servicio de IA al generar preguntas.");
             }
@@ -229,7 +259,7 @@ public class GroqService {
         }
 
         log.info("[GroqService] Evaluando respuesta | modelo={} | categoria={} | dificultad={}",
-                GROQ_MODEL, category, difficulty);
+                GROQ_MODEL, sanitizarParaLog(category), sanitizarParaLog(difficulty));
 
         // Primer intento
         try {
@@ -287,7 +317,8 @@ public class GroqService {
         } catch (HttpStatusCodeException e) {
             int statusCode = e.getStatusCode().value();
             // Logueamos el cuerpo del error de Groq (sin API key)
-            log.error("[GroqService] Error HTTP {} de Groq | body={}", statusCode, e.getResponseBodyAsString());
+            log.error("[GroqService] Error HTTP {} de Groq | body={}",
+                    statusCode, sanitizarParaLog(e.getResponseBodyAsString()));
 
             switch (statusCode) {
                 case 401 -> throw new ResponseStatusException(
@@ -377,7 +408,7 @@ public class GroqService {
             JsonNode choicesNode = root.path("choices");
             if (choicesNode.isMissingNode() || !choicesNode.isArray() || choicesNode.isEmpty()) {
                 log.error("[GroqService] Respuesta de Groq no contiene 'choices'. Body recortado: {}",
-                        responseBody.substring(0, Math.min(200, responseBody.length())));
+                        sanitizarParaLog(responseBody.substring(0, Math.min(200, responseBody.length()))));
                 throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
                         "Respuesta inesperada del servicio de IA.");
             }
