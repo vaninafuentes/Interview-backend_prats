@@ -33,6 +33,60 @@ hacer clic**, **qué comando escribir** y **qué tenés que ver** para saber que
 
 ---
 
+# ⭐ LO MÁS IMPORTANTE: cómo se dispara cada caso
+
+> **Esta es LA pregunta del parcial.** El pipeline tiene **dos jobs**: uno que construye y publica,
+> y otro que despliega. **Lo que cambia es si el segundo se ejecuta o no.**
+
+## La regla, en una tabla
+
+| Lo que hacés | Los comandos | Job 1<br/>Construye y publica | Job 2<br/>**Despliega** |
+| :--- | :--- | :---: | :---: |
+| **Pushear un commit** | `git push` | ✅ | ❌ **NO** |
+| **Pushear una etiqueta** | `git tag v1.1.2`<br/>`git push origin v1.1.2` | ✅ | ✅ **SÍ** |
+| **Botón "Run workflow"** | GitHub → Run workflow → ☑️ deploy | ✅ | ✅ **SÍ** |
+
+## Respondiendo a "mostrame el CI y después el CD"
+
+```
+1. Hacés el cambio y pusheás
+   $ git add -A && git commit -m "cambio para la demo" && git push
+   ➜ Corre SOLO la Integración Continua. NO despliega.
+
+2. El profesor te dice "ahora desplegalo"
+   $ git tag v1.1.2
+   $ git push origin v1.1.2
+   ➜ Corre la Integración Y el DESPLIEGUE. Listo.
+```
+
+**Son dos comandos. Nada más.**
+
+> ⚠️ **Ojo con el nombre de la etiqueta:** tiene que empezar con **`v`** y tener **`X.Y.Z`**
+> (por ejemplo `v1.1.2`). Si la etiqueta no empieza con `v`, el workflow **no se dispara nunca**.
+
+## Por qué el pipeline sabe qué hacer
+
+Está en una línea del archivo `.github/workflows/ci.yml`:
+
+```yaml
+if: >-
+  needs.build-scan-push.result == 'success' &&
+  (startsWith(github.ref, 'refs/tags/v') || inputs.deploy == true)
+```
+
+**Traducido:** *"ejecutá el job de despliegue **si** el de construcción salió bien **Y** (esto fue
+la subida de una etiqueta **O** se marcó la casilla de deploy)".*
+
+**Esa es toda la lógica.** Y conviene decirla en la defensa, porque demuestra que sabés cómo
+funciona el pipeline por dentro y no solo cómo usarlo.
+
+## La tercera forma (la que sirve para revertir)
+
+El botón **Run workflow** hace lo mismo que un tag, pero **te deja elegir qué versión desplegar**.
+Por eso sirve para **volver a una versión anterior** sin reconstruir nada.
+
+---
+
 # Caso 0 — Preparación (hacelo antes de todo)
 
 > ⚠️ **Sin esto la app no arranca y el health devuelve 503.** Es el error que ya vivimos.
