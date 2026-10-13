@@ -160,11 +160,46 @@ Container App. **Ninguna credencial está en el código.**
 | `SPRING_JPA_HIBERNATE_DDL_AUTO` | Estrategia de esquema (`update`) |
 | `SPRING_JPA_SHOW_SQL` | Mostrar SQL en consola (`false` en producción) |
 | `HIKARI_MAX_POOL_SIZE` | Conexiones máximas del pool (10) |
-| `JWT_SECRET` | Clave de firma de los tokens 🔒 |
+| `JWT_SECRET` | Clave de firma de los tokens 🔒 **obligatoria** |
 | `JWT_EXPIRATION_MS` | Vigencia del token (7 días) |
 | `GROQ_API_KEY` | Clave de la API de IA 🔒 (opcional) |
 
 Ver **[.env.example](.env.example)** para la plantilla completa.
+
+### Variable `JWT_SECRET`
+
+**No tiene valor por defecto, a propósito.** Si falta, la aplicación **no arranca**; si tiene
+menos de 32 bytes, tampoco. Se valida al inicio (en `JwtUtil`) para que el problema aparezca al
+arrancar y no en el primer inicio de sesión, con la aplicación ya en ejecución.
+
+**Para ejecutar en local**, generá una clave y exportala:
+
+```bash
+# Generar una clave de 48 bytes y guardarla en un archivo local
+openssl rand -base64 48 > .jwt_secret
+
+# Opción A: exportarla en la terminal (vive solo mientras dure la sesión)
+export JWT_SECRET="$(cat .jwt_secret)"
+
+# Opción B: dejarla en .env para que Docker Compose la tome sola
+echo "JWT_SECRET=$(cat .jwt_secret)" >> .env
+```
+
+> El archivo `.jwt_secret` **no se versiona**, y su contenido **no debe pegarse en ningún chat,
+> issue ni captura de pantalla**. Es la clave con la que se firman los tokens: quien la tenga
+> puede emitir tokens válidos para cualquier usuario.
+
+**Dónde se configura en cada entorno:**
+
+| Entorno | Cómo se provee |
+| :--- | :--- |
+| `./gradlew bootRun` | Variable de entorno exportada (opción A) |
+| `docker compose up` | El archivo `.env` (opción B) |
+| Pipeline de CI | Secreto de GitHub, leído por el workflow |
+| Azure | Secreto del Container App |
+
+Para rotarla basta con cambiar el valor en el Container App: los tokens ya emitidos dejan de ser
+válidos y los usuarios deben volver a iniciar sesión.
 
 ---
 
@@ -239,11 +274,27 @@ consultables con KQL).
 bash scripts/admin.sh
 
 # O directamente una operación
-bash scripts/admin.sh estado       # estado general del sistema
-bash scripts/admin.sh versiones    # imágenes publicadas en el ACR
-bash scripts/admin.sh logs         # logs de la aplicación
-bash scripts/admin.sh encender     # encender la base de datos
+bash scripts/admin.sh estado        # estado general del sistema
+bash scripts/admin.sh versiones     # imágenes publicadas en el ACR
+bash scripts/admin.sh logs          # logs de la aplicación
+bash scripts/admin.sh encender      # encender la base de datos
+bash scripts/admin.sh detener       # detener la base de datos
+
+# Aplicación (Azure Container Apps)
+bash scripts/admin.sh app           # estado de ejecución (solo lectura)
+bash scripts/admin.sh app-frenar    # detener la aplicación
+bash scripts/admin.sh app-iniciar   # volver a levantarla
 ```
+
+**Detener la aplicación no borra nada:** conserva la configuración, los secretos, las variables de
+entorno y la imagen en el registro. Solo deja de ejecutar réplicas y de facturar consumo.
+
+> **Detener ≠ escalar a cero.** Escalar a cero es una configuración de costo: la aplicación se
+> despierta sola con la primera petición. Detener es una acción operativa: no vuelve a arrancar
+> hasta que se la inicie explícitamente. Además, Azure no admite `maxReplicas` en 0.
+>
+> El script usa `az rest` contra la API REST oficial (`.../containerApps/<app>/stop`), porque el
+> subcomando `az containerapp stop` todavía no está en la versión de CLI instalada.
 
 ---
 

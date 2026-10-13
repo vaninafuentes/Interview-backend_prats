@@ -4,6 +4,7 @@ import com.example.interviewback.model.User;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
+import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -31,11 +32,30 @@ import java.util.Date;
 @Component
 public class JwtUtil {
 
+    /** Mínimo de HMAC-SHA256: menos de 32 bytes produce una firma débil. */
+    private static final int MIN_SECRET_BYTES = 32;
+
     @Value("${jwt.secret}")
     private String secret;
 
     @Value("${jwt.expiration-ms}")
     private long expirationMs;
+
+    /**
+     * Verifica la clave al arrancar, para que el problema se vea en el inicio y
+     * no en el primer inicio de sesión con la aplicación ya en ejecución.
+     *
+     * @throws IllegalStateException si la clave es demasiado corta
+     */
+    @PostConstruct
+    void validarClave() {
+        int bytes = secret.getBytes(StandardCharsets.UTF_8).length;
+        if (bytes < MIN_SECRET_BYTES) {
+            throw new IllegalStateException(
+                    "JWT_SECRET es demasiado corta: se requieren al menos " + MIN_SECRET_BYTES
+                            + " bytes y tiene " + bytes + ". Generá una con: openssl rand -base64 48");
+        }
+    }
 
     /** Genera la clave criptográfica a partir del secreto configurado */
     private SecretKey getSigningKey() {

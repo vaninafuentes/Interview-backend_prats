@@ -48,6 +48,8 @@ out/
 .env
 .env.local
 .secrets/
+# Claves generadas localmente para desarrollo (ver README > Variable JWT_SECRET).
+.jwt_secret
 
 ### Exportaciones de imágenes Docker (evidencia de escaneo) ###
 # docker save genera archivos de ~120 MB que no deben versionarse.

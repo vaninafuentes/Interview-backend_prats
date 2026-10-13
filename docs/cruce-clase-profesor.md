@@ -280,68 +280,96 @@ la firma y el token se rechaza."*
 
 # Parte 3 — Los tres huecos reales del proyecto
 
-Estos son huecos de verdad. Dos conviene cerrarlos antes del parcial.
+Estos son los puntos donde el profesor puede encontrar algo. Uno ya está corregido y verificado;
+los otros dos son decisiones de diseño con respuesta preparada.
 
-## 3.1 `JWT_SECRET` tiene un valor por defecto escrito en el repositorio
+## 3.1 `JWT_SECRET` tenía un valor por defecto en el repositorio — ✅ CORREGIDO
 
-**⚠️ El profesor dijo textual: "quiero ver si realmente no hardcodea la parte de JSON Web Token".**
-Y este es el punto donde lo va a mirar.
+**✅ Estado: cerrado.** Se quitó el valor por defecto. Esta sección queda como registro del
+problema y de la verificación, porque es el punto que el profesor dijo que iba a revisar
+(*"quiero ver si realmente no hardcodea la parte de JSON Web Token"*).
 
-**No hay ningún token hardcodeado** — eso está bien. Pero la **clave para firmar** sí tiene valor
-por defecto en el repositorio:
+**El problema que había:** no había ningún token hardcodeado, pero la **clave para firmar** tenía
+valor por defecto en tres archivos versionados. Nunca se usaba en producción, pero tenía dos
+defectos reales: a la vista era una clave en el repositorio, y si alguien desplegaba sin
+configurar la variable, la aplicación **arrancaba igual** firmando con una clave pública.
 
-| Archivo | Línea | Contenido |
-| :--- | :---: | :--- |
-| `src/main/resources/application.properties` | 38 | `jwt.secret=${JWT_SECRET:interview-app-super-secret-key-2024-change-in-production}` |
-| `docker-compose.yml` | 62 | `JWT_SECRET: ${JWT_SECRET:-interview-app-super-secret-key-2024-change-in-production}` |
-| `.env.example` | — | valor de ejemplo |
+**Lo que se hizo:**
 
-**Qué tan grave es:** el valor por defecto **nunca se usa en producción** —el Container App
-inyecta la clave real desde un secreto y el pipeline usa otra solo para los tests—. Es un
-*fallback* de desarrollo. Pero **a la vista es una clave en el repositorio**, y alguien que
-audita código lo va a marcar. Y tiene un problema real: si alguien despliega sin configurar la
-variable, la aplicación arranca igual firmando con una clave pública y conocida.
+| Archivo | Antes | Ahora |
+| :--- | :--- | :--- |
+| `application.properties` | `${JWT_SECRET:<clave por defecto>}` | `${JWT_SECRET}` — sin valor por defecto |
+| `docker-compose.yml` | `${JWT_SECRET:-<clave por defecto>}` | `${JWT_SECRET:?Falta JWT_SECRET...}` — falla con mensaje claro |
+| `JwtUtil` | sin validación | `@PostConstruct` que rechaza claves de menos de 32 bytes al arrancar |
+| `.env.example` | etiqueta "HS256" incorrecta | etiqueta corregida + cómo generar la clave |
 
-**La corrección correcta** es quitar el valor por defecto:
+**Verificado con ejecución real** (no es una suposición):
 
-```properties
-# Antes
-jwt.secret=${JWT_SECRET:interview-app-super-secret-key-2024-change-in-production}
-
-# Después
-jwt.secret=${JWT_SECRET}
-```
-
-**¿Rompe algo?** No. Ya está provisto en los tres lugares donde corre:
-
-| Entorno | ¿Quién provee `JWT_SECRET`? |
+| Caso | Resultado |
 | :--- | :--- |
-| Pipeline (tests) | `ci.yml` → `JWT_SECRET: clave-solo-para-los-tests-...` ✅ |
-| Docker Compose | `docker-compose.yml` línea 62 ✅ |
-| Azure | Secreto del Container App ✅ |
-| `./gradlew bootRun` local | ❌ **Único caso que se rompe** → hay que exportarla antes |
+| Sin `JWT_SECRET` | ❌ No arranca → `Could not resolve placeholder 'JWT_SECRET' in value "${JWT_SECRET}" <-- "${jwt.secret}"` |
+| Con clave de 11 bytes | ❌ No arranca → `JWT_SECRET es demasiado corta: se requieren al menos 32 bytes y tiene 11` |
+| Con clave válida de 48 bytes | ✅ Arranca → `Started InterviewBackApplication in 6.029 seconds` |
+| `docker compose config` sin la variable | ❌ Falla → `required variable JWT_SECRET is missing a value: Falta JWT_SECRET...` |
+| `docker compose config` con la variable | ✅ Configuración válida |
 
-Y ese último caso es **una ventaja**: la aplicación falla al arrancar en vez de arrancar con una
-clave conocida. Se arregla con `export JWT_SECRET=$(openssl rand -base64 48)`.
+**Quién provee la variable ahora:**
+
+| Entorno | Quién la provee |
+| :--- | :--- |
+| Pipeline (tests) | `ci.yml` — clave de 55 bytes solo para los tests |
+| Docker Compose | El `.env` local (plantilla en `.env.example`) |
+| Azure | Secreto del Container App |
+| `./gradlew bootRun` | Hay que exportarla antes — **a propósito** |
+
+**El único caso que requiere un paso manual es el desarrollo local**, y es intencional: es
+preferible que falle al arrancar a que arranque con una clave conocida. Cómo se configura está
+en el [README](../README.md#variable-jwt_secret).
 
 ## 3.2 No hay caché de usuario
 
 **Lo que el profesor mencionó:** un decorador que guarde un caché con los datos del usuario en
 JSON.
 
-**No lo tenemos, y hay una respuesta:**
+**No lo tenemos.** Y conviene tener clara la respuesta, porque hay una confusión frecuente:
 
-- **La aplicación es sin estado** (`SessionCreationPolicy.STATELESS`): no hay sesión que cachear.
-- **El equivalente funcional ya existe: el propio token.** El JWT lleva los datos del usuario
-  (`sub`, `name`, `id`) y viaja con cada petición. No hace falta ni un caché ni un almacén de
-  sesiones compartido — que además obligaría a levantar Redis, un servicio más que pagar.
-- El usuario sí se relee de la base en cada petición (`JwtAuthFilter` hace `findByEmail`), y eso
-  es **deliberado**: así un cambio de permisos tiene efecto de inmediato, sin esperar a que el
-  token venza. Lo dice el comentario en el código.
+**Un JWT no es un caché.** Son cosas distintas:
 
-**Si insiste en el caché**, la implementación sería `@EnableCaching` + `@Cacheable("users")`, y
-el precio sería que desactivar un usuario tarda hasta que venza el caché. Hoy no tenemos ese
-problema.
+- Un **caché** guarda una copia de datos para **evitar volver a calcularlos o consultarlos**. Vive
+  en memoria (o en Redis), tiene expiración propia y lo administra el servidor.
+- Un **JWT** es un **token firmado** que *transporta* identidad y claims. No guarda nada ni evita
+  ninguna consulta: solo afirma quién es el usuario, y la firma garantiza que nadie lo modificó.
+
+Decir "el token es el caché" sería incorrecto: el token **no reemplaza** a un caché de usuarios
+como Redis. Lo que hace el token es reemplazar el **almacén de sesiones**, que es otra cosa.
+
+**Por qué no necesitamos un caché:**
+
+- La única consulta que se repite es `findByEmail`, sobre una columna **única e indexada**, y
+  **una sola vez por petición**. Es una lectura por índice: barata.
+- No hay consultas caras ni encadenadas que justifiquen guardar el resultado.
+- Un caché agregaría un problema nuevo: un usuario desactivado seguiría siendo válido hasta que
+  venza la entrada, en vez de dejar de serlo de inmediato.
+
+**Cuándo sí haría falta:**
+
+- Si el usuario se armara con **varias consultas** caras por petición.
+- Si hubiera **varios servicios** que necesitaran compartir el estado de sesión.
+- Si el tráfico fuera alto y esa consulta apareciera en el perfil como cuello de botella.
+
+En ese caso la implementación sería `@EnableCaching` + `@Cacheable("users")` para un caché local
+en memoria, o **Redis** si hiciera falta compartirlo entre réplicas.
+
+**Redis, concretamente, para qué sería:** para estado **compartido entre varias réplicas**. Hoy la
+aplicación no tiene estado que compartir —el token viaja con cada petición y los datos están en
+MySQL—, así que agregarlo sería un servicio más para pagar y mantener, sin resolver ningún
+problema que exista.
+
+**La respuesta para el profesor:** *"No tenemos caché de usuarios. La consulta que se repite es
+una lectura por índice sobre una columna única, una vez por petición. Un caché agregaría el
+problema de que un usuario desactivado siga siendo válido hasta que venza la entrada. Si
+hicieran falta varias réplicas con estado compartido, ahí sí evaluaría Redis; hoy no hay estado
+compartido que guardar."*
 
 ## 3.3 No hay "remember me" ni refresh token
 
@@ -775,35 +803,98 @@ distinta para producción significa que lo que probaste no es lo que desplegaste
 
 ### P18. ¿Cómo freno la aplicación?
 
-**⚠️ Aclaración importante, verificada:** `az containerapp stop` existe según la documentación
-de Microsoft, **pero tu CLI local (2.89.1) todavía no lo reconoce**. Probado: devuelve
-`'stop' is misspelled or not recognized`. Así que para la demo usá uno de estos dos caminos.
+**✅ Ya está implementado en `scripts/admin.sh`.** El profesor ofrece un punto extra si se
+demuestra *desde el terminal*.
 
-**Opción 1 — Desde el portal** (el que el profesor va a querer ver):
-
-```
-Portal → Container Apps → interview-backend
-  → Overview → botón "Stop" (si aparece en tu versión del portal)
-  O bien:
-  → Application → Scale and replicas → Min replicas = 0, Max replicas = 0 → Save
-```
-
-**Opción 2 — Desde el terminal** (vale el punto extra):
+#### La vía correcta: la API oficial de detener/iniciar
 
 ```bash
-# Detener: escalar a cero
-az containerapp update -n interview-backend -g rg-interview-app \
-  --min-replicas 0 --max-replicas 0
-
-# Volver a levantar
-az containerapp update -n interview-backend -g rg-interview-app \
-  --min-replicas 0 --max-replicas 1
+bash scripts/admin.sh app            # consultar el estado (solo lectura)
+bash scripts/admin.sh app-frenar     # detener (pide confirmación)
+bash scripts/admin.sh app-iniciar    # volver a levantar (pide confirmación)
 ```
 
-**Por qué "frenar" en Container Apps significa escalar a cero:** no hay servidores que apagar.
-El servicio es sin servidor: "apagado" quiere decir 0 réplicas corriendo, y Azure deja de
-cobrar la ejecución. El Container App sigue existiendo, con su configuración y su URL, listo
-para volver a levantar.
+Por dentro, el script llama a la API REST oficial con `az rest`:
+
+```
+POST .../Microsoft.App/containerApps/interview-backend/stop?api-version=2025-07-01
+POST .../Microsoft.App/containerApps/interview-backend/start?api-version=2025-07-01
+```
+
+#### ⚠️ Dos cosas que NO funcionan, y conviene saber por qué
+
+**1. `az containerapp stop` — existe en la documentación, pero no en el CLI instalado.**
+
+El subcomando es reciente. En la versión instalada (2.89.1) **no está reconocido**:
+
+```
+$ az containerapp stop --help
+ERROR: 'stop' is misspelled or not recognized by the system.
+```
+
+Por eso el script usa `az rest` contra la misma API: la operación es idéntica, solo cambia la
+forma de invocarla, y así **no depende de la versión del CLI**.
+
+**2. `--max-replicas 0` — no es válido, y además no sería equivalente.**
+
+Dos motivos, y los dos importan:
+
+**a) Azure rechaza el valor.** La documentación oficial fija el mínimo de `maxReplicas` en **1**:
+
+| Límite | Valor por defecto | Mínimo | Máximo |
+| :--- | :---: | :---: | :--- |
+| Réplicas **mínimas** por revisión | 0 | **0** | 1.000 |
+| Réplicas **máximas** por revisión | 10 | **1** | 1.000 |
+
+**b) Aunque se aceptara, escalar a cero NO es detener.** Son cosas distintas:
+
+| | Escalar a cero (`minReplicas: 0`) | Detener (API `stop`) |
+| :--- | :--- | :--- |
+| ¿Atiende una petición que llega? | ✅ **Sí**: crea una réplica y responde | ❌ No: rechaza el tráfico |
+| ¿Se puede "despertar" solo? | ✅ Sí, con la primera petición | ❌ No: hay que llamar a `start` |
+| ¿Para qué sirve? | Ahorro de costo con tráfico intermitente | **Acción operativa**: garantizar que no arranque |
+
+La documentación de Microsoft lo dice explícitamente: *"Stopping an app is different. Stopping is
+an explicit operational action, and it's useful when you want to guarantee the app doesn't start
+replicas while you're mitigating an incident."*
+
+**La frase para la defensa:** *"Escalar a cero es una configuración de costo: la aplicación sigue
+viva y se despierta sola con la primera petición. Detener es una acción operativa: la aplicación
+no arranca hasta que se la inicie explícitamente. No son lo mismo, y Azure no permite
+`maxReplicas` en 0."*
+
+#### Verificación de la implementación
+
+| Qué se verificó | Cómo | Resultado |
+| :--- | :--- | :--- |
+| La URL coincide con la API oficial | Comparada contra la referencia de Microsoft Learn | ✅ Idéntica |
+| `az rest` acepta las banderas usadas | `az rest -h` | ✅ `--url`, `--method` |
+| Sintaxis del script | `bash -n scripts/admin.sh` | ✅ Sin errores |
+| El estado correcto al detener | Referencia oficial de la API | ✅ `"runningStatus": "Stopped"` |
+| Manejo de error de la ruta de lectura | Ejecutado con la sesión de Azure bloqueada | ✅ Diagnostica la causa en vez de fallar en silencio |
+| El script no toca la configuración | Revisión del código: solo emite el POST de stop/start; nunca llama a `containerapp update` ni escribe secretos | ✅ Solo cambia el estado |
+| **Detener y volver a iniciar de verdad** | — | ⏳ **Pendiente** — requiere sesión activa y autorización |
+| **Que la configuración y los secretos se conserven** | — | ⏳ **Se confirma en esa misma prueba** |
+
+**Los dos últimos puntos son lo único sin verificar.** El comando está implementado, su
+construcción está validada contra la documentación oficial, y el script no toca ninguna
+configuración —solo emite el POST de stop/start—, pero **no se ejecutó contra Azure** porque la
+sesión de CLI está bloqueada (`AADSTS530035`).
+
+**Antes del parcial hay que hacer una pasada en vivo** con la sesión activa, y en esa misma
+prueba conviene capturar:
+
+```bash
+# Antes de detener: guardar la configuración para comparar
+az containerapp show -n interview-backend -g rg-interview-app \
+  --query "{imagen:properties.template.containers[0].image, secretos:properties.configuration.secrets[].name, variables:properties.template.containers[0].env[].name}" -o json
+
+# Detener y volver a iniciar
+bash scripts/admin.sh app-frenar
+bash scripts/admin.sh app-iniciar
+
+# Después: repetir la primera consulta y comparar que sea idéntica
+```
 
 **El detalle que suma puntos:** la base de datos **sí** tiene un stop de verdad, y es la que más
 gasta:
@@ -812,9 +903,6 @@ gasta:
 bash scripts/admin.sh detener    # az mysql flexible-server stop
 bash scripts/admin.sh encender   # az mysql flexible-server start
 ```
-
-**Nota:** `scripts/admin.sh` **no incluye todavía** el frenado del Container App. Es la mejora
-pendiente: el profesor ofrece un punto extra por el camino por terminal.
 
 ### P19. Métricas: ¿dónde pongo la parte de métricas? ¿Dónde van esos datos?
 
@@ -854,9 +942,10 @@ configuración y una etiqueta para identificar la aplicación. Lo demás lo toma
 tiempo de vencimiento se leen con `@Value("${jwt.secret}")` y `@Value("${jwt.expiration-ms}")`,
 que son referencias a la configuración, no valores.
 
-**Pero hay un punto que sí te pueden marcar:** la clave tiene un **valor por defecto de
-desarrollo** escrito en `application.properties`. Ver [3.1](#31-jwt_secret-tiene-un-valor-por-defecto-escrito-en-el-repositorio),
-donde está la explicación y la corrección.
+**Y hay un punto que antes se podía marcar y ya está corregido:** la clave tenía un valor por
+defecto de desarrollo escrito en `application.properties`. Se quitó, y ahora la aplicación **no
+arranca** si falta o si es demasiado corta. Ver [3.1](#31-jwt_secret-tenía-un-valor-por-defecto-en-el-repositorio--corregido),
+con las cinco pruebas de ejecución real.
 
 **Cómo demostrar que está bien:** mostrar que en el Container App la clave es un **secreto**, no
 una variable común:
@@ -875,17 +964,21 @@ eso:** en `application.properties` **no hay ninguna credencial real**.
 spring.datasource.url=${SPRING_DATASOURCE_URL:jdbc:mysql://localhost:3307/...}
 spring.datasource.username=${SPRING_DATASOURCE_USERNAME:root}
 spring.datasource.password=${SPRING_DATASOURCE_PASSWORD:root}
-jwt.secret=${JWT_SECRET:...}
+jwt.secret=${JWT_SECRET}
 ```
 
 **La sintaxis `${VARIABLE:valor_por_defecto}` significa:** usá la variable de entorno; si no
-existe, usá el valor por defecto. En producción **las tres variables están definidas** en el
-Container App, así que los valores por defecto **nunca se usan**.
+existe, usá el valor por defecto. En producción **las variables están definidas** en el Container
+App, así que los valores por defecto **nunca se usan**. Y `jwt.secret` directamente **no tiene**
+valor por defecto: sin la variable, la aplicación no arranca.
 
 **El matiz honesto, que conviene decir en vez de que te lo encuentren:** los valores por defecto
 `root`/`root` son la contraseña del MySQL que levanta Docker Compose **en tu máquina**. No son
-credenciales de ningún servicio real. Aun así, están a la vista en el repositorio, y por eso el
-`JWT_SECRET` conviene sacarlo ([3.1](#31-jwt_secret-tiene-un-valor-por-defecto-escrito-en-el-repositorio)).
+credenciales de ningún servicio real, y no dan acceso a nada fuera de tu equipo. Aun así están a
+la vista, y es la única credencial que queda así —la de JWT ya se sacó
+([3.1](#31-jwt_secret-tenía-un-valor-por-defecto-en-el-repositorio--corregido))—. Si el profesor
+lo marca, la respuesta es que son valores de conveniencia para el entorno local y que en Azure
+la contraseña es un secreto del Container App.
 
 **La respuesta:** *"En properties no hay credenciales: hay referencias a variables de entorno con
 valor por defecto solo para desarrollo local. En Azure las variables están definidas y los
@@ -1066,8 +1159,9 @@ curl -i "https://${FQDN}/actuator/health"     # → {"status":"UP"}
 | Qué mostrar | Cómo |
 | :--- | :--- |
 | **Reversión** | `bash scripts/admin.sh` → opción 3 → elegir la etiqueta anterior |
-| **Detener** | Portal → Scale and replicas → 0 réplicas. O `az containerapp update --min-replicas 0 --max-replicas 0` |
-| **Encender** | La operación inversa, con `--max-replicas 1` |
+| **Estado de la app** | `bash scripts/admin.sh app` |
+| **Detener** | `bash scripts/admin.sh app-frenar` (o el portal) |
+| **Encender** | `bash scripts/admin.sh app-iniciar` |
 | **Ver el historial** | `bash scripts/admin.sh revisiones` |
 
 ## Las tres frases que cierran la demo

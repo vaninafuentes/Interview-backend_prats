@@ -31,6 +31,8 @@ ACR_REGISTRY="${ACR_REGISTRY:-${ACR_NAME}.azurecr.io}"
 APP_NAME="${APP_NAME:-interview-backend}"
 IMAGE_NAME="${IMAGE_NAME:-interview-backend}"
 DB_SERVER="${DB_SERVER:-mysql-interview-backend}"
+# Se completa al verificar la sesión.
+SUSCRIPCION="${SUSCRIPCION:-}"
 
 # Colores para que la salida se lea mejor
 if [[ -t 1 ]]; then
@@ -56,6 +58,7 @@ verificar_login() {
   fi
   local cuenta
   cuenta=$(az account show --query "name" -o tsv 2>/dev/null)
+  SUSCRIPCION=$(az account show --query id -o tsv 2>/dev/null)
   ok "Sesión activa en la suscripción: ${cuenta}"
   return 0
 }
@@ -193,6 +196,208 @@ detener_base() {
 }
 
 # ------------------------------------------------------------------------------
+# 4b. Detener / iniciar la aplicación (Container App)
+# ------------------------------------------------------------------------------
+# Se invoca la API REST oficial con 'az rest' en lugar de usar
+# 'az containerapp stop' / 'az containerapp start'. Motivo: esos subcomandos son
+# recientes y la versión de CLI instalada (2.89.1) todavía no los reconoce.
+# La operación que se ejecuta es exactamente la misma; solo cambia la forma de
+# invocarla, y así el script no depende de la versión del CLI.
+#
+#   POST .../Microsoft.App/containerApps/<app>/stop?api-version=2025-07-01
+#   POST .../Microsoft.App/containerApps/<app>/start?api-version=2025-07-01
+#
+# Referencia oficial:
+#   https://learn.microsoft.com/rest/api/resource-manager/containerapps/container-apps/stop
+#
+# Detener es una acción de nivel de aplicación, no de revisión: NO borra la
+# configuración, los secretos, las variables de entorno ni la imagen. La
+# aplicación deja de ejecutar réplicas y deja de facturar consumo; el recurso,
+# la URL y los datos de la base se conservan intactos.
+
+API_VERSION="${API_VERSION:-2025-07-01}"
+
+# Recurso ARM de la aplicación
+url_app() {
+  echo "https://management.azure.com/subscriptions/${SUSCRIPCION}/resourceGroups/${RESOURCE_GROUP}/providers/Microsoft.App/containerApps/${APP_NAME}"
+}
+
+# Lee el estado de ejecución ("Running", "Stopped", "Scale to 0", ...). No modifica nada.
+estado_ejecucion() {
+  az rest --method GET --url "$(url_app)?api-version=${API_VERSION}" \
+    --query "properties.runningStatus" -o tsv 2>/dev/null
+}
+
+# Traduce el error de Azure a una causa concreta, para no dejar al usuario sin pista.
+diagnosticar_acceso() {
+  local salida
+  salida=$(az rest --method GET --url "$(url_app)?api-version=${API_VERSION}" 2>&1 >/dev/null)
+  if grep -qi "AADSTS" <<<"${salida}"; then
+    echo "       La sesión de Azure CLI está vencida o bloqueada."
+    echo "       Ejecutá:  az login --tenant <tenant> --scope https://management.core.windows.net//.default"
+    grep -oE "AADSTS[0-9]+[^.]*" <<<"${salida}" | head -1 | sed 's/^/       Motivo: /'
+  elif grep -qiE "AuthorizationFailed|does not have authorization" <<<"${salida}"; then
+    echo "       Tu cuenta no tiene permisos sobre este recurso."
+  elif grep -qiE "ResourceNotFound|was not found" <<<"${salida}"; then
+    echo "       No se encontró '${APP_NAME}' en '${RESOURCE_GROUP}'."
+  else
+    head -2 <<<"${salida}" | sed 's/^/       /'
+  fi
+}
+
+# Espera hasta que el estado de ejecución sea exactamente el indicado.
+esperar_estado() {
+  local esperado="$1" intentos="${2:-24}" i estado
+  for ((i = 1; i <= intentos; i++)); do
+    estado=$(estado_ejecucion)
+    if [[ "${estado}" == "${esperado}" ]]; then
+      ok "Estado confirmado: '${estado}' (intento ${i})."
+      return 0
+    fi
+    echo "    Intento ${i}: estado '${estado:-desconocido}'... esperando"
+    sleep 5
+  done
+  err "No se alcanzó el estado '${esperado}' en ${intentos} intentos."
+  return 1
+}
+
+# Espera hasta que la aplicación deje de estar detenida.
+esperar_activa() {
+  local intentos="${1:-24}" i estado
+  for ((i = 1; i <= intentos; i++)); do
+    estado=$(estado_ejecucion)
+    if [[ -n "${estado}" && "${estado}" != "Stopped" ]]; then
+      ok "La aplicación volvió a estar activa: '${estado}' (intento ${i})."
+      return 0
+    fi
+    echo "    Intento ${i}: estado '${estado:-desconocido}'... esperando"
+    sleep 5
+  done
+  err "La aplicación no volvió a estar activa en ${intentos} intentos."
+  return 1
+}
+
+# Consulta el estado. Solo lectura, sin confirmación.
+estado_app() {
+  titulo "ESTADO DE LA APLICACIÓN (Container App)"
+  if [[ -z "${SUSCRIPCION}" ]]; then
+    SUSCRIPCION=$(az account show --query id -o tsv 2>/dev/null)
+  fi
+
+  local estado
+  estado=$(estado_ejecucion)
+
+  if [[ -z "${estado}" ]]; then
+    err "No se pudo consultar el estado de la aplicación."
+    diagnosticar_acceso
+    return 1
+  fi
+
+  echo "  Nombre          : ${APP_NAME}"
+  echo "  Grupo de recurso: ${RESOURCE_GROUP}"
+  echo "  Estado          : ${estado}"
+  case "${estado}" in
+    Stopped) ok "La aplicación está DETENIDA (no ejecuta réplicas)." ;;
+    *)       ok "La aplicación está OPERATIVA." ;;
+  esac
+  echo
+  echo "  Imagen en ejecución:"
+  az containerapp show -n "${APP_NAME}" -g "${RESOURCE_GROUP}" \
+    --query "properties.template.containers[0].image" -o tsv 2>/dev/null | sed 's/^/    /'
+  return 0
+}
+
+# Detiene la aplicación. Modifica el estado, así que pide confirmación.
+frenar_app() {
+  titulo "DETENER LA APLICACIÓN (Container App)"
+
+  local estado
+  estado=$(estado_ejecucion)
+  if [[ -z "${estado}" ]]; then
+    err "No se pudo consultar el estado actual. No se hace nada."
+    return 1
+  fi
+  if [[ "${estado}" == "Stopped" ]]; then
+    warn "La aplicación ya está detenida. No se hace nada."
+    return 0
+  fi
+
+  echo "  Estado actual: ${estado}"
+  echo
+  echo "  Qué hace esta operación:"
+  echo "    - Deja de ejecutar réplicas y deja de facturar consumo."
+  echo "    - NO borra la configuración, los secretos ni las variables de entorno."
+  echo "    - NO borra la imagen del registro ni toca la base de datos."
+  echo "    - La URL pública deja de responder mientras esté detenida."
+  warn "Mientras esté detenida, el login de la app no responde."
+  echo "  Para volver a levantarla: este mismo script, opción 4c."
+  echo
+  read -r -p "  ¿Confirmás que querés detenerla? (s/N): " conf
+  [[ "${conf}" =~ ^[sS]$ ]] || { warn "Cancelado. La aplicación sigue como estaba."; return 0; }
+
+  echo
+  echo "  Enviando la solicitud a la API de Azure..."
+  if ! az rest --method POST \
+        --url "$(url_app)/stop?api-version=${API_VERSION}" >/dev/null 2>&1; then
+    err "La API rechazó la solicitud. Revisá la sesión con 'az login' y los permisos."
+    return 1
+  fi
+  ok "Solicitud aceptada. La operación es asíncrona: esperando confirmación..."
+  echo
+  esperar_estado "Stopped"
+}
+
+# Inicia la aplicación. Modifica el estado, así que pide confirmación.
+iniciar_app() {
+  titulo "INICIAR LA APLICACIÓN (Container App)"
+
+  local estado
+  estado=$(estado_ejecucion)
+  if [[ -z "${estado}" ]]; then
+    err "No se pudo consultar el estado actual. No se hace nada."
+    return 1
+  fi
+  if [[ "${estado}" != "Stopped" ]]; then
+    warn "La aplicación ya está activa (estado: '${estado}'). No se hace nada."
+    return 0
+  fi
+
+  echo "  Estado actual: ${estado}"
+  echo
+  echo "  Al iniciarla vuelve a atender peticiones con la MISMA imagen, la misma"
+  echo "  configuración y los mismos secretos que tenía antes de detenerla."
+  echo "  Después del arranque sigue escalando a cero cuando no hay tráfico."
+  echo
+  read -r -p "  ¿Confirmás que querés iniciarla? (s/N): " conf
+  [[ "${conf}" =~ ^[sS]$ ]] || { warn "Cancelado. La aplicación sigue detenida."; return 0; }
+
+  echo
+  echo "  Enviando la solicitud a la API de Azure..."
+  if ! az rest --method POST \
+        --url "$(url_app)/start?api-version=${API_VERSION}" >/dev/null 2>&1; then
+    err "La API rechazó la solicitud. Revisá la sesión con 'az login' y los permisos."
+    return 1
+  fi
+  ok "Solicitud aceptada. La operación es asíncrona: esperando confirmación..."
+  echo
+  if esperar_activa; then
+    echo
+    echo "  Verificando el health check público..."
+    local fqdn code
+    fqdn=$(az containerapp show -n "${APP_NAME}" -g "${RESOURCE_GROUP}" \
+      --query "properties.configuration.ingress.fqdn" -o tsv 2>/dev/null)
+    for i in $(seq 1 12); do
+      code=$(curl -s -o /dev/null -w '%{http_code}' -m 30 "https://${fqdn}/actuator/health" 2>/dev/null || echo "000")
+      [[ "${code}" == "200" ]] && { ok "La aplicación responde HTTP 200."; return 0; }
+      echo "    Intento ${i}: HTTP ${code}... esperando"
+      sleep 10
+    done
+    warn "No respondió HTTP 200 todavía. Puede estar escalada a cero: probá de nuevo en un minuto."
+  fi
+  return 0
+}
+
+# ------------------------------------------------------------------------------
 # 5. Ver logs de la aplicación
 # ------------------------------------------------------------------------------
 ver_logs() {
@@ -313,6 +518,8 @@ menu() {
     echo "   2) Listar versiones disponibles en el ACR"
     echo "   3) Desplegar una versión publicada (o revertir)"
     echo "   4) Encender / detener la base de datos"
+    echo "   4b) Ver el estado de la aplicación     (solo lectura)"
+    echo "   4c) Detener / iniciar la aplicación"
     echo "   5) Ver logs en vivo"
     echo "   6) Ver revisiones"
     echo "   7) Ver logs históricos (Log Analytics)"
@@ -326,11 +533,23 @@ menu() {
       2) listar_versiones ;;
       3) desplegar_version ;;
       4)
-        echo "     a) Encender    b) Detener"
+        echo "     a) Encender    b) Detener      (base de datos)"
         read -r -p "     Opción: " sub
         case "${sub}" in
           a|A) iniciar_base ;;
           b|B) detener_base ;;
+          *) warn "Opción inválida." ;;
+        esac
+        ;;
+      4b|4B)
+        estado_app
+        ;;
+      4c|4C)
+        echo "     a) Detener    b) Iniciar      (aplicación)"
+        read -r -p "     Opción: " sub
+        case "${sub}" in
+          a|A) frenar_app ;;
+          b|B) iniciar_app ;;
           *) warn "Opción inválida." ;;
         esac
         ;;
@@ -362,7 +581,11 @@ if [[ $# -gt 0 ]]; then
     encender)   iniciar_base ;;
     detener)    detener_base ;;
     url)        abrir_url ;;
-    *) echo "Opciones: estado | versiones | revisiones | logs | encender | detener | url"; exit 1 ;;
+    app)        estado_app ;;
+    app-frenar) frenar_app ;;
+    app-iniciar) iniciar_app ;;
+    *) echo "Opciones: estado | versiones | revisiones | logs | encender | detener | url"
+       echo "          app | app-frenar | app-iniciar"; exit 1 ;;
   esac
   exit 0
 fi
