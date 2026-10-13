@@ -215,6 +215,14 @@ Push de tag vX.Y.Z  ───────►  Lo mismo + despliega en Azure Cont
 Run workflow  ─────────────►  Igual, pero eligiendo si desplegar y qué versión (permite revertir)
 ```
 
+El workflow tiene **dos jobs**. El primero corre siempre; **el segundo solo si corresponde**:
+
+| Lo que hacés | Job 1 — Construye y publica | Job 2 — **Despliega** |
+| :--- | :---: | :---: |
+| `git push` (un commit) | ✅ | ❌ **no** |
+| `git push origin vX.Y.Z` (una etiqueta) | ✅ | ✅ **sí** |
+| Run workflow + casilla `deploy` | ✅ | ✅ **sí** |
+
 **Versionado:** cada imagen se publica con la etiqueta del SHA corto del commit (`:6aec073`) y, si
 corresponde a una etiqueta del repositorio, también con la versión semántica (`:v1.1.0`). El despliegue
 siempre usa una etiqueta explícita, nunca `latest`.
@@ -263,8 +271,9 @@ consultables con KQL).
 | [docs/azure.md](docs/azure.md) | Infraestructura, costos y runbook de administración |
 | [docs/seguridad.md](docs/seguridad.md) | CVEs, remediación, Grype vs. Trivy vs. Snyk, CodeQL |
 | [docs/monitoreo.md](docs/monitoreo.md) | Observabilidad, métricas, consultas KQL, 12 factores |
+| [docs/postman-referencia.md](docs/postman-referencia.md) | 🔧 Las 7 peticiones para probar la API, con body y resultado esperado |
+| [docs/cruce-clase-profesor.md](docs/cruce-clase-profesor.md) | Cruce con la clase del profesor y las respuestas a sus preguntas |
 | [docs/auditoria-final.md](docs/auditoria-final.md) | Verificación de los 42 requisitos con evidencia |
-| [docs/guia-parcial.md](docs/guia-parcial.md) | Guía de defensa: 50 preguntas respondidas y simulacro |
 
 ---
 
