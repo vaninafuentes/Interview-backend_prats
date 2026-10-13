@@ -231,9 +231,22 @@ url_app() {
 }
 
 # Lee el estado de ejecución ("Running", "Stopped", "Scale to 0", ...). No modifica nada.
+#
+# Reintenta unas veces: justo después de un stop o un start la API puede tardar
+# un instante en responder, y no queremos abortar una operación por eso.
+# Devuelve 1 si no pudo leerlo en ningún intento.
 estado_ejecucion() {
-  az rest --method GET --url "$(url_app)?api-version=${API_VERSION}" \
-    --query "properties.runningStatus" -o tsv 2>/dev/null
+  local intento estado
+  for intento in 1 2 3; do
+    estado=$(az rest --method GET --url "$(url_app)?api-version=${API_VERSION}" \
+      --query "properties.runningStatus" -o tsv 2>/dev/null)
+    if [[ -n "${estado}" ]]; then
+      echo "${estado}"
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
 }
 
 # Traduce el error de Azure a una causa concreta, para no dejar al usuario sin pista.
@@ -320,17 +333,19 @@ frenar_app() {
   titulo "DETENER LA APLICACIÓN (Container App)"
 
   local estado
-  estado=$(estado_ejecucion)
-  if [[ -z "${estado}" ]]; then
-    err "No se pudo consultar el estado actual. No se hace nada."
-    return 1
-  fi
+  estado=$(estado_ejecucion) || true
+
   if [[ "${estado}" == "Stopped" ]]; then
     warn "La aplicación ya está detenida. No se hace nada."
     return 0
   fi
 
-  echo "  Estado actual: ${estado}"
+  if [[ -n "${estado}" ]]; then
+    echo "  Estado actual: ${estado}"
+  else
+    warn "No se pudo leer el estado actual (la API no respondió)."
+    echo "       Se intenta igual: detener es idempotente y no rompe nada."
+  fi
   echo
   echo "  Qué hace esta operación:"
   echo "    - Deja de ejecutar réplicas y deja de facturar consumo."
@@ -360,17 +375,19 @@ iniciar_app() {
   titulo "INICIAR LA APLICACIÓN (Container App)"
 
   local estado
-  estado=$(estado_ejecucion)
-  if [[ -z "${estado}" ]]; then
-    err "No se pudo consultar el estado actual. No se hace nada."
-    return 1
-  fi
-  if [[ "${estado}" != "Stopped" ]]; then
+  estado=$(estado_ejecucion) || true
+
+  if [[ -n "${estado}" && "${estado}" != "Stopped" ]]; then
     warn "La aplicación ya está activa (estado: '${estado}'). No se hace nada."
     return 0
   fi
 
-  echo "  Estado actual: ${estado}"
+  if [[ -n "${estado}" ]]; then
+    echo "  Estado actual: ${estado}"
+  else
+    warn "No se pudo leer el estado actual (la API no respondió)."
+    echo "       Se intenta igual: iniciar es idempotente y no rompe nada."
+  fi
   echo
   echo "  Al iniciarla vuelve a atender peticiones con la MISMA imagen, la misma"
   echo "  configuración y los mismos secretos que tenía antes de detenerla."
