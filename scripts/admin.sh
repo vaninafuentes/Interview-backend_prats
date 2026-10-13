@@ -52,9 +52,17 @@ titulo(){ echo; echo "${C_TIT}=== $* ===${C_OFF}"; }
 # ------------------------------------------------------------------------------
 verificar_login() {
   if ! az account show >/dev/null 2>&1; then
-    warn "No hay sesión activa en Azure."
-    echo "       Iniciando sesión con 'az login'..."
-    az login >/dev/null 2>&1 || { err "No se pudo iniciar sesión."; return 1; }
+    err "No hay sesión activa en Azure."
+    echo
+    echo "       El script NO inicia sesión solo: 'az login' es interactivo y"
+    echo "       quedaría esperando. Iniciá sesión vos y volvé a ejecutarlo."
+    echo
+    echo "       Desde tu terminal:"
+    echo "         az login"
+    echo
+    echo "       Si estás bloqueada por MFA, usá Cloud Shell (ya viene autenticado):"
+    echo "         https://shell.azure.com"
+    return 1
   fi
   local cuenta
   cuenta=$(az account show --query "name" -o tsv 2>/dev/null)
